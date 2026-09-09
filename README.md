@@ -1,4 +1,4 @@
-# AI Engineering - Entregas del Curso
+# AI Engineering - Entregas del Curso 2026-09
 
 Repositorio con las entregas del curso de AI Engineering.
 
