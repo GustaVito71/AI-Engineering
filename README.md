@@ -1,4 +1,4 @@
-# AI Engineering - Entregas del Curso
+# AI Engineering - Entregas del Curso 2026-09
 
 Repositorio con las entregas del curso de AI Engineering.
 
@@ -6,7 +6,7 @@ Repositorio con las entregas del curso de AI Engineering.
 
 | # | Entrega | Tecnología | Estado |
 |---|---------|------------|--------|
-| 01 | [lidr_1](./lidr_1/) | --- | Pendiente |
+| 01 | [lidr_1](./lidr_1/) | Python | Entregado |
 
 ## Requisitos
 

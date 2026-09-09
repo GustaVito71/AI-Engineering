@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switcherllm"
+version = "0.1.0"
+description = "Mini CLI que llama al mismo prompt a OpenAI, Anthropic, Gemini y DeepSeek usando los patrones Adapter, Factory y Strategy."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Gustavo" }]
+keywords = ["llm", "ai", "openai", "anthropic", "gemini", "deepseek", "adapter", "factory", "strategy"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "google-genai>=1.0",
+    "deepseek>=1.0",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+# Crea el comando 'switcherllm' que llama a la función run() del módulo
+switcherllm = "switcherllm:run"
+
+[tool.setuptools]
+# El módulo raíz + el paquete con los adaptadores
+py-modules = ["switcherllm"]
+packages = ["providers"]
