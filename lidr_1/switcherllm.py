@@ -105,8 +105,8 @@ def run() -> None:
     Se invoca tanto desde la consola (comando 'switcherllm' tras pip install)
     como al ejecutar 'python3 switcherllm.py'.
     """
-    # Se lee la variable de entorno LLM_DEFAULT si existe, si no openai
-    default_provider = os.environ.get("LLM_DEFAULT", "openai")
+    # Se lee la variable de entorno LLM_DEFAULT si existe, si no anthropic
+    default_provider = os.environ.get("LLM_DEFAULT", "anthropic")
     client = LLMClient(default_provider)  # el cliente se crea UNA vez y se reutiliza
     print(f"\nIniciando SwitcherLLM con proveedor default: {default_provider}\n")
     main(client)
