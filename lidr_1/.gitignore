@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .venv/
 venv_lidr1/
+# Artefactos de build de Python
+*.egg-info/
+build/
+dist/
