@@ -1,0 +1,5 @@
+openai>=1.40
+anthropic>=0.40
+google-genai>=1.0
+deepseek>=1.0
+python-dotenv>=1.0

@@ -1,0 +1,8 @@
+# Secretos - nunca comitear
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv_lidr1/

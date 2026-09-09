@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+switcherllm.py
+providers/__init__.py
+providers/anthropic_provider.py
+providers/base.py
+providers/deepseek_provider.py
+providers/errors.py
+providers/factory.py
+providers/gemini_provider.py
+providers/openai_provider.py
+switcherllm.egg-info/PKG-INFO
+switcherllm.egg-info/SOURCES.txt
+switcherllm.egg-info/dependency_links.txt
+switcherllm.egg-info/entry_points.txt
+switcherllm.egg-info/requires.txt
+switcherllm.egg-info/top_level.txt
