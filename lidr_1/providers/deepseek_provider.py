@@ -51,9 +51,9 @@ class DeepSeekProvider(BaseProvider):
             return LLMResponse(
                 content=response.choices[0].message.content or "",
                 model=response.model,
-                usage={  # mismo esquema de tokens que OpenAI
-                    "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
-                    "completion_tokens": response.usage.completion_tokens if response.usage else None,
+                usage={  # mismo esquema de tokens que OpenAI; normalizamos a input/output
+                    "input_tokens": response.usage.prompt_tokens if response.usage else None,
+                    "output_tokens": response.usage.completion_tokens if response.usage else None,
                 },
             )
         # Mapeamos los errores del SDK a nuestros errores normalizados

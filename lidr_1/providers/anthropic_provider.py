@@ -52,7 +52,7 @@ class AnthropicProvider(BaseProvider):
             response = self.client.messages.create(
                 model=model,
                 max_tokens=max_tokens,  # Anthropic exige fijar el tope de tokens a generar
-                system=[{"type": "text", "text": system_text}] if system_text else None,
+                system=[{"type": "text", "text": system_text}] if system_text else [],
                 messages=user_msgs,
             )
             # La respuesta trae bloques; juntamos solo los de texto

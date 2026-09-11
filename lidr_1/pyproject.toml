@@ -23,6 +23,7 @@ dependencies = [
     "google-genai>=1.0",
     "deepseek>=1.0",
     "python-dotenv>=1.0",
+    "llmprice-kit>=2026.4",
 ]
 
 [project.scripts]
