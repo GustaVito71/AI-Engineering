@@ -12,6 +12,8 @@ No busca ser una herramienta productiva, sino mostrar de forma mínima:
 - Que cada API tiene **forma distinta** (Anthropic separa el system prompt, Gemini usa objetos `Content`, DeepSeek es compatible con OpenAI...).
 - Cómo se manejan **credenciales** (`.env`, variables de entorno) de forma segura.
 - Cómo se **normalizan errores** y se reintenta con backoff exponencial.
+- Cómo calcular el **coste estimado** de cada llamada (LLMPrice, normalización de tokens por proveedor, tabla local de precios).
+- Cómo integrar **monitoreo de errores** en la nube (Sentry, init con DSN, captura de excepciones).
 
 ## Patrones usados
 
@@ -140,6 +142,13 @@ Proveedores soportados: `openai`, `anthropic`, `gemini`, `deepseek`.
   ```
 
 - La fecha del snapshot se lee automáticamente de la versión instalada de `llmprice-kit` (el paquete versiona sus datos por fecha: `2026.4.3` = 3 de abril de 2026).
+
+## Monitoreo de errores con Sentry
+
+- **Sentry** (`sentry-sdk`) recoge los errores de la app en la nube (Sentry.io) para verlos fuera de la máquina.
+- Se activa solo si `SENTRY_DSN` está definido en el `.env` (DSN público, no es secreto). Sin DSN, la app funciona normalmente sin Sentry.
+- Al iniciar, si hay DSN, se hace `sentry_sdk.init(...)` y se imprime `-> Sentry habilitado`.
+- Dentro del REPL, cualquier error de la consulta (`LLMError` o inesperado) se envía a Sentry con `sentry_sdk.capture_exception(e)` y además se muestra en pantalla.
 
 ## Manejo de errores y reintentos
 

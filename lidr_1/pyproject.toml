@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Gustavo" }]
-keywords = ["llm", "ai", "openai", "anthropic", "gemini", "deepseek", "adapter", "factory", "strategy"]
+keywords = ["llm", "ai", "openai", "anthropic", "gemini", "deepseek", "adapter", "factory", "strategy", "sentry", "monitoring", "pricing"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -24,6 +24,7 @@ dependencies = [
     "deepseek>=1.0",
     "python-dotenv>=1.0",
     "llmprice-kit>=2026.4",
+    "sentry-sdk>=2.0",
 ]
 
 [project.scripts]

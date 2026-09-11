@@ -7,3 +7,5 @@ deepseek>=1.0
 python-dotenv>=1.0
 # Base de datos local de precios de modelos (costo estimado por llamada)
 llmprice-kit>=2026.4
+# Monitoreo de errores en la nube
+sentry-sdk>=2.0
