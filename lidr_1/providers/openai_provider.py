@@ -57,9 +57,9 @@ class OpenAIProvider(BaseProvider):
             return LLMResponse(
                 content=response.choices[0].message.content or "",
                 model=response.model,
-                usage={  # el SDK expone el consumo de tokens en "usage"
-                    "prompt_tokens": response.usage.prompt_tokens if response.usage else None,
-                    "completion_tokens": response.usage.completion_tokens if response.usage else None,
+                usage={  # normalizamos los nombres a input/output para todo el programa
+                    "input_tokens": response.usage.prompt_tokens if response.usage else None,
+                    "output_tokens": response.usage.completion_tokens if response.usage else None,
                 },
             )
         # Mapeamos los errores específicos del SDK a nuestros errores normalizados

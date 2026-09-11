@@ -82,10 +82,10 @@ class GeminiProvider(BaseProvider):
             # Normalizamos la respuesta del SDK a nuestro formato común (LLMResponse)
             return LLMResponse(
                 content=response.text or "",
-                model=model,
-                usage={  # el SDK expone el gasto en usage_metadata
-                    "prompt_tokens": response.usage_metadata.prompt_token_count if response.usage_metadata else None,
-                    "completion_tokens": response.usage_metadata.candidates_token_count if response.usage_metadata else None,
+                model=response.model_version,  # metadato propio de la respuesta
+                usage={  # el SDK expone el gasto en usage_metadata; normalizamos nombres
+                    "input_tokens": response.usage_metadata.prompt_token_count if response.usage_metadata else None,
+                    "output_tokens": response.usage_metadata.candidates_token_count if response.usage_metadata else None,
                 },
             )
         except ServerError as e:

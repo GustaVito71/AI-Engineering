@@ -15,6 +15,7 @@ Punto de entrada:  python3 switcherllm.py
 import os
 
 from providers import ProviderFactory, Message, LLMError, retry_with_backoff
+from providers.pricing import estimate_cost
 
 
 class LLMClient:
@@ -24,9 +25,15 @@ class LLMClient:
     la estrategia, se puede sustituir en caliente sin tocar este código.
     """
 
-    def __init__(self, provider_name: str, **provider_kwargs):
+    def __init__(self, provider_name: str, system_prompt: str = None, **provider_kwargs):
         # La fábrica construye el adaptador; aquí solo almacenamos una referencia
         self.current = ProviderFactory.create(provider_name, **provider_kwargs)
+        # Rol del asistente (system prompt): default o el pasado por el llamador
+        self.system_prompt = system_prompt or "Eres un asistente breve que responde en español."
+
+    def set_role(self, system_prompt: str) -> None:
+        # Define el rol (system prompt) que verá el LLM antes del mensaje del usuario
+        self.system_prompt = system_prompt
 
     def switch(self, provider_name: str, **provider_kwargs) -> None:
         # Cambia la estrategia en caliente: se reemplaza el objeto provider
@@ -39,14 +46,22 @@ class LLMClient:
     @retry_with_backoff(max_retries=3, base_delay=1.0)  # reintentos ante rate limit
     def ask(self, prompt: str, **kwargs) -> str:
         message = [
-            Message(role="system", content="Eres un asistente breve que responde en español."),
+            Message(role="system", content=self.system_prompt),
             Message(role="user", content=prompt),
         ]
         resp = self.current.chat(message, **kwargs)  # misma conversación, cualquier proveedor
         print(f"  {resp.content}\n")
 
         if resp.usage:
-            print(f"  Tokens -> {resp.usage}\n")
+            print(f"  Tokens -> {resp.usage}")
+        # El modelo que respondió lo trae la propia respuesta normalizada
+        print(f"  Modelo -> {resp.model}")
+        # estimate_cost devuelve (coste, nota): la nota explica la fuente o el motivo del fallo
+        cost, cost_note = estimate_cost(resp.model, resp.usage)
+        if cost is not None:
+            print(f"  Coste estimado -> ${cost:.6f}\n")
+        else:
+            print(f"  Coste NO estimado -> {cost_note}\n")
         return resp.content
 
 
@@ -60,6 +75,9 @@ def main(client: LLMClient) -> None:
         except LLMError as e:
             print(f"  - {name} [sin key]")  # sin API key configurada para ese proveedor
     print()
+    # Rol por defecto definido al iniciar (variable LLM_ROLE o su fallback)
+    print(f"Rol por defecto: {client.system_prompt}")
+    print()
 
     available = ProviderFactory.list_available()
 
@@ -67,7 +85,7 @@ def main(client: LLMClient) -> None:
     while True:
         print(f"Proveedor actual: {client.current.name}")
         print("Proveedores disponibles: " + ", ".join(available))
-        prompt = input("\nPrompt (o 'modelos', 'switch <proveedor>', 'salir'): ").strip()
+        prompt = input("\nPrompt (o 'modelos', 'switch <proveedor>', 'role <texto>', 'salir'): ").strip()
 
         if prompt.lower() == "salir":
             break
@@ -85,6 +103,15 @@ def main(client: LLMClient) -> None:
                 print(f"-> Cambiado a {target}\n")
             else:
                 print(f"Proveedor '{target}' no existe.\n")
+            continue
+        if prompt.lower() in ("role", "rol", "system"):
+            # Muestra el rol actual sin llamar al LLM
+            print(f"  Rol actual: {client.system_prompt}\n")
+            continue
+        if prompt.lower().startswith(("role ", "rol ")):
+            # Cambia el rol (system prompt) en caliente: afecta a la próxima consulta
+            client.set_role(prompt.split(" ", 1)[1].strip())
+            print(f"-> Rol actualizado: {client.system_prompt}\n")
             continue
         if not prompt:
             continue  # entrada vacía: vuelve a esperar
@@ -107,7 +134,10 @@ def run() -> None:
     """
     # Se lee la variable de entorno LLM_DEFAULT si existe, si no anthropic
     default_provider = os.environ.get("LLM_DEFAULT", "anthropic")
-    client = LLMClient(default_provider)  # el cliente se crea UNA vez y se reutiliza
+    # Se lee la variable de entorno LLM_ROLE si existe, si no el rol por defecto
+    default_role = os.environ.get("LLM_ROLE", "Eres un asistente breve que responde en español.")
+    # el cliente se crea UNA vez y se reutiliza
+    client = LLMClient(default_provider, system_prompt=default_role)
     print(f"\nIniciando SwitcherLLM con proveedor default: {default_provider}\n")
     main(client)
 
