@@ -14,6 +14,8 @@ Punto de entrada:  python3 switcherllm.py
 
 import os
 
+import sentry_sdk  # monitoreo de errores en la nube (Sentry.io)
+
 from providers import ProviderFactory, Message, LLMError, retry_with_backoff
 from providers.pricing import estimate_cost
 
@@ -121,8 +123,12 @@ def main(client: LLMClient) -> None:
         try:
             client.ask(prompt)
         except LLMError as e:
+            # Enviamos el error a Sentry (los LLMError también se reportan)
+            sentry_sdk.capture_exception(e)
             print(f"  ERROR: {e}\n")
         except Exception as e:
+            # Errores inesperados: a Sentry y se siguen mostrando en local
+            sentry_sdk.capture_exception(e)
             print(f"  ERROR inesperado: {e}\n")
 
 
@@ -132,6 +138,11 @@ def run() -> None:
     Se invoca tanto desde la consola (comando 'switcherllm' tras pip install)
     como al ejecutar 'python3 switcherllm.py'.
     """
+    # Sentry: solo se activa si existe SENTRY_DSN en el entorno (.env)
+    if dsn := os.environ.get("SENTRY_DSN"):
+        sentry_sdk.init(dsn=dsn, environment="development", traces_sample_rate=1.0)
+        print("  -> Sentry habilitado: los errores se reportan a Sentry.io\n")
+
     # Se lee la variable de entorno LLM_DEFAULT si existe, si no anthropic
     default_provider = os.environ.get("LLM_DEFAULT", "anthropic")
     # Se lee la variable de entorno LLM_ROLE si existe, si no el rol por defecto
