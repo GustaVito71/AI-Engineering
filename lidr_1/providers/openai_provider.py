@@ -44,22 +44,43 @@ class OpenAIProvider(BaseProvider):
         )
 
     def chat(self, messages: list[Message], model: str | None = None, temperature: float = 0.7) -> LLMResponse:
-        """Estructura típica de una llamada a OpenAI (SDK): crear una "completion"."""
+        """Estructura típica de una llamada a OpenAI usando la RESPONSES API (SDK).
+
+        La Responses API es la recomendada por OpenAI para proyectos nuevos.
+        La antigua Chat Completions API queda comentada más abajo (no se elimina).
+        """
         model = model or self.model  # si no pasan modelo, usamos el por defecto
         try:
+            # ─── VERSIÓN ANTIGUA (deprecada): Chat Completions API ───
+            # Soportada indefinidamente, pero ya no se recomienda para nuevos desarrollos.
+            #   response = self.client.chat.completions.create(
+            #       model=model,
+            #       messages=[{"role": m.role, "content": m.content} for m in messages],
+            #       temperature=temperature,  # 0 = determinista, 1 = creativo
+            #   )
+            #   return LLMResponse(
+            #       content=response.choices[0].message.content or "",
+            #       model=response.model,
+            #       usage={  # Chat Completions usa prompt/completion_tokens
+            #           "input_tokens": response.usage.prompt_tokens if response.usage else None,
+            #           "output_tokens": response.usage.completion_tokens if response.usage else None,
+            #       },
+            #   )
+
+            # ─── VERSIÓN NUEVA: Responses API (recomendada por OpenAI) ───
             # La petición clave: enviamos los mensajes con roles "system"/"user"/"assistant"
-            response = self.client.chat.completions.create(
+            response = self.client.responses.create(
                 model=model,
-                messages=[{"role": m.role, "content": m.content} for m in messages],
+                input=[{"role": m.role, "content": m.content} for m in messages],
                 temperature=temperature,  # 0 = determinista, 1 = creativo
             )
             # Normalizamos la respuesta del SDK a nuestro formato común (LLMResponse)
             return LLMResponse(
-                content=response.choices[0].message.content or "",
+                content=response.output_text or "",
                 model=response.model,
-                usage={  # normalizamos los nombres a input/output para todo el programa
-                    "input_tokens": response.usage.prompt_tokens if response.usage else None,
-                    "output_tokens": response.usage.completion_tokens if response.usage else None,
+                usage={  # la Responses API ya usa input_tokens/output_tokens directos
+                    "input_tokens": response.usage.input_tokens if response.usage else None,
+                    "output_tokens": response.usage.output_tokens if response.usage else None,
                 },
             )
         # Mapeamos los errores específicos del SDK a nuestros errores normalizados
