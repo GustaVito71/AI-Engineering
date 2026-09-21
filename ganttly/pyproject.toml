@@ -1,0 +1,11 @@
+[project]
+name = "ganttly"
+version = "0.1.0"
+description = "Ganttly - AI Engineer services exposing AI capabilities via FastAPI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.141.1",
+    "streamlit>=1.64.0",
+    "uvicorn[standard]>=0.53.0",
+]
