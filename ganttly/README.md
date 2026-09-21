@@ -2,12 +2,24 @@
 
 Mini aplicación de **AI Engineering services**: expone capacidades de IA a través de una **API FastAPI** con una **interfaz Streamlit** como frontend. Empaquetada con **uv** y dockerizada en dos servicios (`api` y `ui`) con **Docker Compose**.
 
-## Objetivo educativo
+## Objetivo de corto plazo
 
 - Mostrar un servicio backend con **FastAPI** (endpoints, CORS) listo para integrar capacidades de IA.
 - Mostrar un frontend liviano con **Streamlit** conectado a ese backend.
 - Aplicar **uv** como gestor de dependencias y empaquetado (reproducible vía `uv.lock`).
 - Mostrar **multi-stage Dockerfile** y orquestación con **Docker Compose** para correr backend y frontend juntos.
+
+## Objetivo de largo plazo
+
+Producto SaaS de inteligencia artificial que, conectado a un proveedor de gestión de proyectos, genera un **diagrama de Gantt** a partir de una épica y sus tareas y subtareas.
+
+- **Conector a Jira:** dado `épica → tareas → subtareas`, construir un cronograma con fechas, dependencias y camino crítico.
+- **Agnóstico del proveedor de PM:** modelo canónico propio (definición unificada de épica/tarea/subtarea) + capa de adaptadores (patrón puerto/adaptador). Futuro: Asana, Linear, Azure DevOps, etc.
+- **Agnóstico del LLM:** AI Gateway con puerto propio (`complete`, `complete_json`, `embed`). Sustituible entre OpenAI, Anthropic o modelos locales sin tocar el núcleo.
+- **Lógica híbrida:** la IA solo resuelve lo ambiguo (estimación de duración, dependencias implícitas, riesgos); fechas y camino crítico los calcula un motor determinista (**CPM/PERT**).
+- **Salida estructurada:** la IA retorna JSON validado por schema; si falla, fallback a heurísticas.
+- **SaaS multi-tenant:** PostgreSQL con Row-Level Security + cola de trabajos asíncronos (Redis + workers) para sync, pipeline de IA y exportación a PNG/PDF.
+- **CI/CD y testing:** GitHub Actions (CI, evals de LLM, CD) con pirámide de tests: unit del núcleo, adaptadores con mocks, evals con golden-set y E2E con Playwright.
 
 ## Estructura
 
@@ -62,5 +74,7 @@ uv run ui       # o: streamlit run frontend/app.py
 
 - [x] API con endpoints base
 - [x] UI con pestañas Chat y Dashboard
-- [ ] Integración de IA pendiente (Chat)
-- [ ] Contenedores `api` y `ui` vía Compose
+- [x] Contenedores `api` y `ui` vía Compose
+- [ ] Chat con IA
+- [ ] Conector Jira
+- [ ] Motor CPM/Gantt
