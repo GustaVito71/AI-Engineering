@@ -60,7 +60,7 @@ uv run ui       # o: streamlit run frontend/app.py
 
 ## Estado
 
-- [ ] API con endpoints base
-- [ ] UI con pestañas Chat y Dashboard
+- [x] API con endpoints base
+- [x] UI con pestañas Chat y Dashboard
 - [ ] Integración de IA pendiente (Chat)
 - [ ] Contenedores `api` y `ui` vía Compose
