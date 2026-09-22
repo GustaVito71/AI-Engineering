@@ -38,21 +38,23 @@ No busca ser una herramienta productiva, sino mostrar de forma mínima:
 
 ```
 lidr_1/
-├── switcherllm.py           # Código cliente + REPL + punto de entrada
-├── pyproject.toml           # Empaquetado y comando 'switcherllm'
-├── requirements.txt         # Dependencias
-├── .env.example             # Plantilla de credenciales (copia a .env)
+├── switcherllm.py		# Código cliente + REPL + punto de entrada
+├── pyproject.toml		# Empaquetado y comando 'switcherllm'
+├── requirements.txt		# Dependencias
+├── .env.example		# Plantilla de credenciales (copia a .env)
 └── providers/
-    ├── __init__.py          # Carga el .env automáticamente
-    ├── base.py              # Interfaz común: Message, LLMResponse, BaseProvider
-    ├── errors.py            # Errores normalizados + retry_with_backoff
-    ├── pricing.py           # Coste estimado por llamada (tabla local de LLMPrice)
-    ├── factory.py           # ProviderFactory
-    ├── openai_provider.py
-    ├── anthropic_provider.py
+    ├── __init__.py		# Carga el .env automáticamente
+    ├── base.py			# Interfaz común: Message, LLMResponse, BaseProvider
+    ├── errors.py		# Errores normalizados + retry_with_backoff
+    ├── pricing.py		# Coste estimado por llamada (tabla local de LLMPrice)
+    ├── factory.py		# ProviderFactory
+    ├── openai_provider.py	# Hace uso de nueva Responses API (client.responses.create)
+    ├── anthropic_provider.py  
     ├── gemini_provider.py
-    └── deepseek_provider.py
+    └── deepseek_provider.py	# Mantiene Chat Completions (client.chat.completions.create) adrede
 ```
+
+> **Nota:** `openai_provider.py` usa la nueva **Responses API** de OpenAI (`client.responses.create`), la recomendada para proyectos nuevos; la antigua Chat Completions se conserva comentada en el código. En `deepseek_provider.py` se decidió mantener a propósito **Chat Completions** (`client.chat.completions.create`) como contraste educativo: DeepSeek sigue el formato de OpenAI y ambas siguen operativas, por lo que sirven de comparativa entre las dos generaciones de la API.
 
 ## Requisitos
 
