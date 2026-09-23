@@ -1,8 +1,17 @@
-name: CI
+name: CI lidr_2
 
 on:
   push:
+    paths:
+      - "lidr_2/**"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "lidr_2/**"
+
+defaults:
+  run:
+    working-directory: lidr_2
 
 jobs:
   test:
@@ -20,8 +29,10 @@ jobs:
         run: uv sync --locked --all-groups
 
       # Los tests mockean el LLM: esta suite corre sin API keys.
-      # (Una ejecución correcta de CI verifica el código y el contrato local;
-      # no confirma que las credenciales o el proveedor externo existan en prod.)
+      # GitHub Actions solo descubre workflows en el .github/workflows de la
+      # raíz del repo (aunque recorra sus subcarpetas); por eso este archivo
+      # vive aquí y no en lidr_2/.github/. El filtro de paths lo aísla para
+      # que solo corra cuando cambia algo de lidr_2.
       - name: Ejecutar tests
         run: uv run pytest -q
 
