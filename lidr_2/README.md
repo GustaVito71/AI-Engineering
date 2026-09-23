@@ -94,10 +94,17 @@ mecanismos:
    El resto de la suite prueba el flujo completo (recibir → inyectar contexto
    → "LLM" → respuesta) con proveedores mockeados, así el pipeline corre sin
    API keys.
-2. **CI automático** (`.github/workflows/ci.yml`): se ejecuta en cada `push` y
-   `pull_request` con la misma suite + lint. `uv sync --locked` falla si
-   `uv.lock` está desincronizado del `pyproject.toml` — así "se me olvidó
-   regenerar el lock" es un error de CI hoy y no una sorpresa después.
+2. **CI automático** (`.github/workflows/ci.yml` en la **raíz del monorepo**):
+   se ejecuta en cada `push` y `pull_request` (filtrado a `lidr_2/**` en paths)
+   con la misma suite + lint. `uv sync --locked` falla si `uv.lock` está
+   desincronizado del `pyproject.toml` — así "se me olvidó regenerar el lock"
+   es un error de CI hoy y no una sorpresa después.
+
+> Por qué en la raíz: GitHub Actions solo descubre workflows en el
+> `.github/workflows` de la raíz del repo (aunque sí recorre sus subcarpetas).
+> Un `lidr_2/.github/workflows/ci.yml` nunca se ejecuta — de hecho el pipeline
+> no corrió hasta que se movió. `defaults.run.working-directory: lidr_2`
+> ejecuta la suite dentro de este proyecto.
 
 ```text
 push / pull_request
@@ -118,7 +125,7 @@ app/
 └── routers/           # validación de entrada + traducción a HTTP
 test/                  # suite + test/test_estructura.py (valida este árbol)
 datos/transcripcion_reunion.md   # la transcripción canónica (parámetro)
-.github/workflows/ci.yml
+../.github/workflows/ci.yml      # pipeline (raíz del monorepo, scope lidr_2/**)
 ```
 
 `test/test_estructura.py` verifica esta estructura de forma automática: si

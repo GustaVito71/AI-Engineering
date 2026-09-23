@@ -34,9 +34,18 @@ SE_ESPERA = [
     # La transcripción canónica (parámetro del ejercicio)
     "datos",
     "datos/transcripcion_reunion.md",
-    # Pipeline automático
-    ".github/workflows/ci.yml",
 ]
+
+
+def test_el_pipeline_vive_en_la_raiz_del_monorepo():
+    # GitHub Actions solo descubre workflows en el .github/workflows de la
+    # raíz del repo. Un .github anidado en lidr_2/ es invisible para el CI
+    # (y de hecho el pipeline no corrió hasta moverlo a la raíz).
+    pipeline = REPO_ROOT.parent / ".github" / "workflows" / "ci.yml"
+    assert pipeline.is_file()
+    assert "working-directory: lidr_2" in pipeline.read_text(encoding="utf-8")
+    assert "pytest -q" in pipeline.read_text(encoding="utf-8")
+    assert "ruff check ." in pipeline.read_text(encoding="utf-8")
 
 
 def test_la_estructura_de_carpetas_es_la_del_ejercicio():
