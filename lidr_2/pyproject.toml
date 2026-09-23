@@ -1,0 +1,49 @@
+[project]
+name = "estimador-cag"
+version = "0.1.0"
+description = "Servicio FastAPI que genera estimaciones de duración de proyectos a partir de transcripciones de reuniones usando CAG (Cache-Augmented Generation)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.4",
+    "python-dotenv>=1.0",
+    "structlog>=24.1",
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "llmprice-kit>=2026.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+# Correcto por defecto y dicho en voz alta: esto es una aplicación, no una librería.
+# Ninguna librería va a hacer `pip install estimador-cag`. Si la herramienta lo cree
+# empaquetable, construye el paquete en cada `uv sync` y falla buscando un layout src/
+# que no existe. `package = false` le dice que solo instale las dependencias.
+package = false
+
+[tool.pytest.ini_options]
+# auto: los def async se corren con anyio, los def sync como tests
+# normales, sin decoro asyncio. Requiere pytest-asyncio en el grupo dev.
+asyncio_mode = "auto"
+testpaths = ["test"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint.flake8-bugbear]
+# `Depends()` como default de parámetro es el patrón idiomático de FastAPI
+# (la resolución la hace el framework en runtime, no Python). No es un bug:
+# se declara en la config en vez de silenciar cada línea con `# noqa: B008`.
+extend-immutable-calls = ["fastapi.Depends"]

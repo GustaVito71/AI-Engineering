@@ -1,0 +1,12 @@
+# Secretos: nunca se commitean.
+.env
+
+# Entornos virtuales y caches locales.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Nota: uv.lock se commitea (ver CAG: elección de app, no de librería).

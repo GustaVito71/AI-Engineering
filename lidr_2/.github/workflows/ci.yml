@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+
+      # --locked: falla si uv.lock está desincronizado del pyproject.toml.
+      # Así "se me olvidó regenerar el lock" es un error de CI hoy
+      # y no una sorpresa de entornos incompatibles dentro de tres semanas.
+      - name: Sincronizar dependencias
+        run: uv sync --locked --all-groups
+
+      # Los tests mockean el LLM: esta suite corre sin API keys.
+      # (Una ejecución correcta de CI verifica el código y el contrato local;
+      # no confirma que las credenciales o el proveedor externo existan en prod.)
+      - name: Ejecutar tests
+        run: uv run pytest -q
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
