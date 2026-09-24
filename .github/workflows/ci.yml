@@ -1,0 +1,40 @@
+name: CI lidr_2
+
+on:
+  push:
+    paths:
+      - "lidr_2/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "lidr_2/**"
+
+defaults:
+  run:
+    working-directory: lidr_2
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+
+      # --locked: falla si uv.lock está desincronizado del pyproject.toml.
+      # Así "se me olvidó regenerar el lock" es un error de CI hoy
+      # y no una sorpresa de entornos incompatibles dentro de tres semanas.
+      - name: Sincronizar dependencias
+        run: uv sync --locked --all-groups
+
+      # Los tests mockean el LLM: esta suite corre sin API keys.
+      # GitHub Actions solo descubre workflows en el .github/workflows de la
+      # raíz del repo (aunque recorra sus subcarpetas); por eso este archivo
+      # vive aquí y no en lidr_2/.github/. El filtro de paths lo aísla para
+      # que solo corra cuando cambia algo de lidr_2.
+      - name: Ejecutar tests
+        run: uv run pytest -q
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
