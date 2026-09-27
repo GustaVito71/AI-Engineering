@@ -4,6 +4,7 @@ Quien usa un proveedor (el servicio) solo conoce estas clases; nunca el SDK.
 Así el switch openai <-> anthropic no toca ni el router ni el servicio."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -32,6 +33,25 @@ class LLMResponse:
     usage: dict[str, int | None] | None
 
 
+@dataclass(frozen=True)
+class StreamChunk:
+    """Un fragmento de texto del streaming.
+
+    El consumidor (servicio) lo reenvía tal cual: el renderizado a eventos SSE
+    es responsabilidad del router, este objeto es de dominio."""
+
+    delta: str
+
+
+@dataclass(frozen=True)
+class StreamDone:
+    """Cierre normalizado de un stream, mismos campos que LLMResponse."""
+
+    model: str
+    truncated: bool
+    usage: dict[str, int | None] | None
+
+
 class BaseProvider(ABC):
     """Contrato que todo adaptador debe cumplir."""
 
@@ -51,3 +71,23 @@ class BaseProvider(ABC):
         Contrato async de punta a punta: los adaptadores usan los clientes
         async del SDK (AsyncOpenAI / AsyncAnthropic) para que una llamada
         lenta no bloquee el event loop."""
+
+    @abstractmethod
+    def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncIterator[StreamChunk | StreamDone]:
+        """Transmite la conversación en fragmentos (streaming).
+
+        Las implementaciones son generadores asíncronos: el llamador los
+        recorre con `async for`. Deben ceder `StreamChunk` por cada fragmento
+        de texto y UN `StreamDone` al cierre con los datos normalizados. Los
+        errores de la API del proveedor se lanzan como LLMProviderError
+        (mismo contrato que `chat`), tanto al abrir como a mitad del stream.
+        Quien consume el stream decide qué hacer con un fallo a mitad según
+        su política (el servicio solo hace fallback ANTES del primer
+        fragmento: texto que arrancó = comprometido)."""
+        yield  # pragma: no cover — los adaptadores implementan el generador

@@ -13,6 +13,10 @@ Decisiones de robustez (ver revisión de la sesión):
   proveedor cede el event loop en lugar de congelarlo.
 """
 
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -23,7 +27,8 @@ from openai import (
     AsyncOpenAI as SDKAsyncOpenAI,
 )
 
-from .base import BaseProvider, LLMResponse, Message
+from ..tracing import emitir
+from .base import BaseProvider, LLMResponse, Message, StreamChunk, StreamDone
 from .errors import LLMProviderError
 
 # Errores del SDK que el adaptador sabe interpretar como fallos del proveedor.
@@ -61,6 +66,21 @@ class OpenAIProvider(BaseProvider):
                 max_output_tokens=max_tokens,
             )
         except _SDK_ERRORS as exc:
+            # Dimensión 3 (camino) de la traza: cada fallo de la API del
+            # proveedor queda registrado con datos SANITIZADOS (tipo y
+            # status), nunca el cuerpo crudo de la respuesta — puede
+            # contener datos del request. Los reintentos internos del SDK
+            # (backoff) no se cuentan uno a uno; el evento marca el fallo
+            # que la API devolvió al final de su cadena de reintentos.
+            emitir(
+                __name__,
+                "provider_error",
+                nivel="warning",
+                provider=self.name,
+                tipo_error=type(exc).__name__,
+                status_code=getattr(exc, "status_code", None),
+                max_retries=self.client.max_retries,
+            )
             raise LLMProviderError(
                 provider=self.name,
                 detail="Error de la API de OpenAI",
@@ -84,3 +104,84 @@ class OpenAIProvider(BaseProvider):
                 else None
             ),
         )
+
+    async def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> AsyncIterator[StreamChunk | StreamDone]:
+        """Streaming con la Responses API.
+
+        El manager `client.responses.stream(...)` es un context manager
+        asíncrono que ya deja el stream abierto. Cada evento de la iteración
+        trae un type propio; los que nos interesan:
+        - response.output_text.delta: un fragmento de texto (evento.delta).
+        - response.completed: cierre normal con `response` ya completa
+          (model, usage e incomplete_details para el flag de truncado).
+        - response.failed: la API avisó que el request falló. En la práctica
+          los errores HTTP/red llegan como excepciones del SDK durante la
+          iteración; el try/except _SDK_ERRORS las captura igual que en
+          `chat`, y response.failed sirve de red de seguridad si algún día
+          el SDK decide emitirlo en vez de lanzar.
+        """
+        try:
+            async with self.client.responses.stream(
+                model=self.model,
+                input=[{"role": m.role, "content": m.content} for m in messages],
+                temperature=temperature if temperature is not None else 0.3,
+                max_output_tokens=max_tokens,
+            ) as stream:
+                async for event in stream:
+                    if event.type == "response.output_text.delta":
+                        yield StreamChunk(delta=event.delta)
+                    elif event.type == "response.completed":
+                        response = event.response
+                        usage = response.usage
+                        yield StreamDone(
+                            model=response.model,
+                            truncated=(
+                                response.incomplete_details is not None
+                                and response.incomplete_details.reason == "max_output_tokens"
+                            ),
+                            usage=(
+                                {
+                                    "input_tokens": usage.input_tokens,
+                                    "output_tokens": usage.output_tokens,
+                                }
+                                if usage
+                                else None
+                            ),
+                        )
+                    elif event.type == "response.failed":
+                        # La API avisó el fallo sin lanzar excepción (caso raro):
+                        # lo traducimos igual que un error lanzado.
+                        emitir(
+                            __name__,
+                            "provider_error",
+                            nivel="warning",
+                            provider=self.name,
+                            tipo_error="ResponseFailedEvent",
+                            max_retries=self.client.max_retries,
+                        )
+                        raise LLMProviderError(
+                            provider=self.name,
+                            detail="Error de la API de OpenAI",
+                        )
+        except _SDK_ERRORS as exc:
+            # Mismo sanitizado que chat(): solo tipo y status, nunca el body.
+            emitir(
+                __name__,
+                "provider_error",
+                nivel="warning",
+                provider=self.name,
+                tipo_error=type(exc).__name__,
+                status_code=getattr(exc, "status_code", None),
+                max_retries=self.client.max_retries,
+            )
+            raise LLMProviderError(
+                provider=self.name,
+                detail="Error de la API de OpenAI",
+                status_code=getattr(exc, "status_code", None),
+            ) from exc

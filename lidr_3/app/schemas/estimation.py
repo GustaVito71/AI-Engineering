@@ -45,6 +45,7 @@ class EstimationResponse(BaseModel):
     truncated: bool
     model: str
     provider: str
+    used_fallback: bool
     usage: dict[str, int | None] | None
     cost_usd: float | None
     cost_note: str | None
