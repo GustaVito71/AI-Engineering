@@ -8,7 +8,8 @@ Repositorio con las entregas del curso de AI Engineering.
 |---|---------|------------|--------|
 | 01 | [lidr_1](./lidr_1/) | Python | Entregado |
 | 02 | [lidr_2](./lidr_2/) | Python (FastAPI) | Entregado |
-| 03 | [ganttly](./ganttly/) | Python (FastAPI + Streamlit) | Pendiente |
+| 03 | [lidr_3](./lidr_3/) | Python (FastAPI) | Entregado |
+| 04 | [ganttly](./ganttly/) | Python (FastAPI + Streamlit) | Pendiente |
 
 ## Requisitos
 
