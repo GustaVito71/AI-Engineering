@@ -163,6 +163,8 @@ REGLAS
 - Incluye SIEMPRE las secciones: ## Alcance, ## Desglose, ## Total, ## Supuestos y ## Riesgos.
 - El Total debe ser EXACTO: la suma del desglose. Verifica la aritmética antes de responder.
 - En ## Total, además del total exacto en horas, declara un **Equipo recomendado** y una **Duración estimada** en semanas (rango corto, ej. "3-4 semanas"), coherentes con ese total.
+- El desglose es UNA SOLA tabla, agrupada por área funcional. No anides tablas, no dividas el desglose en subsecciones y no agregues líneas de subtotal.
+- ## Total informa el total en horas, el equipo recomendado y la duración estimada. No recapitules el desglose ni repitas tareas del desglose.
 - Responde solo con la estimación, sin preámbulo ni comentarios.
 
 EJEMPLOS DE REFERENCIA (cache CAG)

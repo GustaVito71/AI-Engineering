@@ -3,7 +3,7 @@
 El resto de la app solo conoce esta interfaz. Cambiar de proveedor no toca
 ni routers ni servicios."""
 
-from .base import BaseProvider, LLMResponse, Message
+from .base import BaseProvider, LLMResponse, Message, StreamChunk, StreamDone
 from .errors import LLMProviderError, UnknownProviderError
 from .factory import create_provider
 
@@ -12,6 +12,8 @@ __all__ = [
     "LLMProviderError",
     "LLMResponse",
     "Message",
+    "StreamChunk",
+    "StreamDone",
     "UnknownProviderError",
     "create_provider",
 ]

@@ -173,6 +173,29 @@ def test_entrada_demasiado_larga_no_llama_al_llm(client, monkeypatch):
     assert "no puede superar" in r.text
 
 
+def test_clave_desconocida_se_rechaza_en_vez_de_ignorarse(client, monkeypatch):
+    """Un typo en el nombre del campo tiene que decir «campo inválido», no
+    «transcripción vacía». Sin extra="forbid" la clave desconocida se descarta
+    en silencio, el validador de límites ve 0 caracteres y el 422 blames el
+    valor: el cliente busca un problema de longitud donde el problema es el
+    nombre. El error tiene que apuntar a la causa."""
+
+    async def no_deberia_llamarse(*args, **kwargs):
+        raise AssertionError("El LLM no debería invocarse con entrada inválida")
+
+    monkeypatch.setattr("app.routers.estimations.generate_estimation", no_deberia_llamarse)
+    r = client.post(
+        "/api/v1/estimate",
+        json={"transcripcion": TRANSCRIPCION},
+    )
+    assert r.status_code == 422
+    # El mensaje tiene que nombrar la clave culpable, no acusar al valor.
+    assert "transcripcion" in r.text
+    assert "Extra inputs are not permitted" in r.text
+    # Y sobre todo: no puede colarse como un 422 de longitud vacía.
+    assert "recibidos 0" not in r.text
+
+
 def test_truncado_se_expone_como_flag_no_como_200_completo(client, monkeypatch):
     """El SDK dice por qué paró. Si paró por max_tokens, la respuesta está
     incompleta y el ejercicio no miente: expone `truncated: true`."""

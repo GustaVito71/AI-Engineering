@@ -9,12 +9,18 @@ configuración."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from ..config import get_settings
 
 
 class EstimationRequest(BaseModel):
+    # Sin esto Pydantic ignora en silencio las claves desconocidas: un cliente
+    # que mande "transcripcion" en vez de "transcription" recibe un 422 que
+    # dice "recibidos 0", y el error apunta al valor en lugar de apuntar a la
+    # causa real. forbid convierte el typo en un error que sí se puede leer.
+    model_config = ConfigDict(extra="forbid")
+
     transcription: str = ""
 
     @model_validator(mode="after")
@@ -45,6 +51,7 @@ class EstimationResponse(BaseModel):
     truncated: bool
     model: str
     provider: str
+    used_fallback: bool
     usage: dict[str, int | None] | None
     cost_usd: float | None
     cost_note: str | None
