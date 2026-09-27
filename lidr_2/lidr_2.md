@@ -240,7 +240,8 @@ Reglas de operación del entorno:
 ### Paso 0 — Contexto
 
 Leé este documento, `README.md`, el código de `app/` y `test/`. Mirá
-`/home/gustavo/Descargas/revision_ejercicio_02.md` (revisión del instructor): es la lista de
+`revision_ejercicio_02` (revisión del instructor; el archivo original se eliminó del
+entorno, pero su contenido está incorporado en la §3 y en la §8): es la lista de
 errores y aciertos que este entregable ya incorpora — no los reintroduzcas.
 
 ### Paso 1 — Bootstrap
@@ -395,4 +396,5 @@ Y en GitHub (después del push del humano): `gh run list` → verde.
 - `test/` — 21 tests (nombres en §7 paso 7).
 - `datos/transcripcion_reunion.md` — parámetro del ejercicio.
 - `../.github/workflows/ci.yml` — pipeline (2 niveles arriba).
-- `/home/gustavo/Descargas/revision_ejercicio_02.md` — revisión del instructor (externo al repo).
+- `revision_ejercicio_02` — revisión del instructor (archivo original eliminado del entorno;
+  su contenido quedó incorporado en §3 decisiones y §8 criterios de aceptación).
