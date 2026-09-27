@@ -308,8 +308,10 @@ def _log_estimacion_final(
     - 3 (qué camino siguió): cache_hit / primario / fallback, cuántos
       proveedores se llamaron y latencias por fase (cache, LLM, total).
     La dimensión 1 (contenido literal) vive en `contenido_intento` (DEBUG).
-    `ttft_ms` (time-to-first-token) es la métrica propia del streaming: en
-    una respuesta no-streaming queda None."""
+    `ttft_ms` (time-to-first-token) es la métrica propia del streaming: se
+    mide desde el envío del request hasta el PRIMER fragmento de contenido
+    del proveedor, así que incluye red + procesamiento del proveedor. En una
+    respuesta no-streaming queda None."""
     emitir(
         __name__,
         "estimacion_completada",
@@ -460,7 +462,9 @@ async def stream_estimation(
       cachea; un fallback NUNCA alimenta el cache (misma regla).
     - Traza: intento_proveedor con la latencia al primer evento, y
       estimacion_completada con `ttft_ms` (time-to-first-token) además de las
-      latencias por fase."""
+      latencias por fase. `ttft_ms` se mide desde el envío del request (antes
+      de abrir el stream), no desde el primer fragmento: el pre-arranque ya se
+      comió ese evento, así que medir después daría un número falso."""
     inicio_total = time.perf_counter()
     # Cache-first, idéntico a generate_estimation: la clave es determinista
     # sobre las ENTRADAS y un hit no arma prompt ni toca proveedor.
@@ -489,6 +493,18 @@ async def stream_estimation(
             )
             yield StreamFinal(resultado=resultado)
             return
+
+    # Stopwatch starts BEFORE the stream is opened. Opening the stream consumes
+    # the first provider chunk, so a stopwatch started after this block would
+    # only measure a no-op gap (the chunk is already in `primero`) and report a
+    # fake `ttft_ms` of ~0.5ms while the provider actually spent ~1.4s. From
+    # here `ttft_ms` means request-submission -> first content chunk (network
+    # + provider processing included), and `latencia_llm_ms` means
+    # request -> stream close. If the primary fails and the fallback answers,
+    # BOTH include the failed primary attempt: that is the latency the user
+    # actually experienced, and the per-attempt breakdown stays in
+    # `intento_proveedor`. Do not "fix" this back to a post-open stopwatch.
+    inicio_llm = time.perf_counter()
 
     # Pre-arranque del primario: abrir el stream consume el primer evento.
     # Solo si ese adelanto termina bien, el proveedor "arrancó" y el camino
@@ -520,7 +536,6 @@ async def stream_estimation(
     rendido_meta = False
     deltas: list[str] = []
     ttft_ms: float | None = None
-    inicio_llm = time.perf_counter()
     done: StreamDone | None = None
     evento = primero
     # El generador del proveedor ya avanzó un evento (el `primero`); este

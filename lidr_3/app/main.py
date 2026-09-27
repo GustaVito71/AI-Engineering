@@ -51,6 +51,26 @@ def configure_logging(level: str = "INFO") -> None:
     root.handlers = [handler]
     root.setLevel(level)
 
+    # Third-party loggers are pinned to WARNING on purpose.
+    #
+    # HTTP transport libraries (httpx, and the httpcore family) log full
+    # request/response HEADERS at DEBUG, which is how account identifiers
+    # (`openai-organization`) and Cloudflare `set-cookie` session values end up
+    # written to the log file. The openai SDK adds its own request/response
+    # trace lines at DEBUG for the same reason. None of that is the user's call:
+    # only this project's own structlog events should follow LOG_LEVEL.
+    #
+    # WARNING and above still pass through, so genuine third-party warnings and
+    # errors are preserved -- only the verbosity dump is suppressed.
+    #
+    # NOTE: pin the top-level namespace, not its children. Child loggers created
+    # later (lazily, by a library that has not been imported yet) inherit from
+    # the pinned parent. Pinning individual children such as "httpcore.http11"
+    # silently fails the moment a transport library is renamed, because an
+    # unlisted child of a NOTSET logger falls back to the DEBUG root level.
+    for noisy in ("httpx", "httpcore", "httpcore2", "openai", "aiohttp", "h11"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -24,6 +24,7 @@ prueba a nivel servicio.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -33,6 +34,7 @@ import pytest
 from anthropic import RateLimitError as AnthropicRateLimitError
 from fastapi.testclient import TestClient
 from openai import RateLimitError as OpenAIRateLimitError
+from structlog.testing import capture_logs
 
 from app.cache import build_cache_key, set_cached_estimation
 from app.config import Settings, get_settings
@@ -136,6 +138,7 @@ async def test_openai_stream_cede_fragmentos_y_cierre():
                 type="response.completed",
                 response=SimpleNamespace(
                     model="gpt-4o-mini",
+                    status="completed",
                     usage=SimpleNamespace(input_tokens=50, output_tokens=20),
                     incomplete_details=None,
                 ),
@@ -158,14 +161,23 @@ async def test_openai_stream_cede_fragmentos_y_cierre():
     assert len(eventos) == 3
 
 
-async def test_openai_stream_marca_truncado_con_max_output_tokens():
-    provider = OpenAIProvider(api_key="k", model="gpt-4o-mini")
+async def test_openai_stream_truncado_cierra_con_incomplete_y_no_se_queda_mudo():
+    """Un stream cortado cierra con `response.incomplete`, NO con `response.completed`.
+
+    Si el provider escucha solo el cierre feliz, nunca emite `StreamDone`, el
+    generador termina mudo y `llm_service` revienta con "terminó sin cierre" —
+    el error que ocurrió en producción. El contrato: un cierre SIEMPRE, y
+    `truncated=True` cuando lo cortó el techo de `max_output_tokens`.
+    """
+    provider = OpenAIProvider(api_key="k", model="gpt-5.1")
     provider.client.responses.stream = lambda **kwargs: _FakeSdkStream(
         [
+            SimpleNamespace(type="response.output_text.delta", delta="## Total\n"),
             SimpleNamespace(
-                type="response.completed",
+                type="response.incomplete",
                 response=SimpleNamespace(
-                    model="gpt-4o-mini",
+                    model="gpt-5.1",
+                    status="incomplete",
                     usage=SimpleNamespace(input_tokens=50, output_tokens=100),
                     incomplete_details=SimpleNamespace(reason="max_output_tokens"),
                 ),
@@ -178,14 +190,13 @@ async def test_openai_stream_marca_truncado_con_max_output_tokens():
         async for e in provider.chat_stream([Message(role="user", content="hola")], max_tokens=100)
     ]
 
-    # Stream sin fragmentos (la respuesta entera se cortó al límite): solo el
-    # cierre, con la señal de truncado normalizada a True.
-    assert len(eventos) == 1
-    assert eventos[0] == StreamDone(
-        model="gpt-4o-mini",
-        truncated=True,
-        usage={"input_tokens": 50, "output_tokens": 100},
-    )
+    # Lo que se había roto: el stream igual cierra, no se queda sin cierre.
+    assert len(eventos) == 2
+    done = eventos[-1]
+    assert isinstance(done, StreamDone)
+    assert done.truncated is True
+    assert done.model == "gpt-5.1"
+    assert done.usage == {"input_tokens": 50, "output_tokens": 100}
 
 
 async def test_openai_stream_error_inicial_se_traduce_a_llm_provider_error():
@@ -293,13 +304,20 @@ async def test_anthropic_stream_error_inicial_se_traduce_a_llm_provider_error():
 
 
 def _fake_provider_factory(
-    llamadas: list[str], *, primario_falla: str | None = None, falla_a_mitad: bool = False
+    llamadas: list[str],
+    *,
+    primario_falla: str | None = None,
+    falla_a_mitad: bool = False,
+    primer_chunk_delay: float = 0.0,
 ):
     """Fábrica de providers con chat_stream simulado.
 
     primario_falla: texto del error del primario antes del primer fragmento
     (pretende simular un 429). falla_a_mitad: el primario cede un fragmento y
-    después lanza -> en ese caso nadie hereda el stream."""
+    después lanza -> en ese caso nadie hereda el stream.
+    primer_chunk_delay: segundos de espera antes del PRIMER fragmento, para
+    simular el tiempo de procesamiento real del proveedor antes del primer
+    token (el resto de los fragmentos salen sin demora)."""
 
     def fake_create(name, api_key, model, *, timeout, max_retries):
         llamadas.append(name)
@@ -310,6 +328,8 @@ def _fake_provider_factory(
                     raise LLMProviderError(
                         provider="openai", detail=primario_falla, status_code=429
                     )
+                if primer_chunk_delay:
+                    await asyncio.sleep(primer_chunk_delay)
                 if name == "openai" and falla_a_mitad:
                     yield StreamChunk(delta="Empezó a escribir ")
                     raise LLMProviderError(
@@ -377,6 +397,63 @@ async def test_stream_cache_hit_cede_solo_el_final(monkeypatch):
     assert len(eventos) == 1
     assert isinstance(eventos[0], StreamFinal)
     assert llamadas == [], "el cache hit no toca al proveedor"
+
+
+async def test_stream_ttft_mide_el_primer_token_real(monkeypatch):
+    """`ttft_ms` must cover the real wait for the provider's first token.
+
+    The service pre-starts the stream by consuming its first event, so a
+    stopwatch started after the stream opens measures a no-op gap and reports
+    ~0.5ms while the provider really took over a second. Injecting a known
+    delay before the first chunk pins the semantics: ttft_ms is measured from
+    request submission to the first content chunk, so it MUST include it.
+    """
+    llamadas: list[str] = []
+    monkeypatch.setattr(
+        llm_service,
+        "create_provider",
+        _fake_provider_factory(llamadas, primer_chunk_delay=0.25),
+    )
+    settings = _make_settings()
+
+    with capture_logs() as eventos:
+        [e async for e in stream_estimation(TRANSCRIPCION, settings)]
+
+    cierres = [e for e in eventos if e["event"] == "estimacion_completada"]
+    assert len(cierres) == 1
+    final = cierres[0]
+    assert final["ttft_ms"] is not None
+    # Tolerant lower bound: 250ms injected, assert >= 200ms so a slow CI box
+    # does not flake, but the old ~0.5ms bug still fails loudly.
+    assert final["ttft_ms"] >= 200, (
+        f"ttft_ms={final['ttft_ms']} did not include the injected 250ms provider delay"
+    )
+
+
+async def test_stream_cache_hit_reporta_ttft_none(monkeypatch):
+    """A cache hit never opens a provider stream, so there is no first token
+    to measure: `ttft_ms` stays None. Guards the ttft stopwatch move above from
+    leaking a bogus 0.0 into the cache-hit path."""
+    llamadas: list[str] = []
+    monkeypatch.setattr(llm_service, "create_provider", _fake_provider_factory(llamadas))
+    settings = _make_settings()
+    cache = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    # Miss first (outside the capture): generates and populates the cache.
+    [e async for e in stream_estimation(TRANSCRIPCION, settings, cache)]
+
+    # Hit: no provider stream at all.
+    with capture_logs() as eventos:
+        eventos_cache = [e async for e in stream_estimation(TRANSCRIPCION, settings, cache)]
+
+    assert len(eventos_cache) == 1
+    assert isinstance(eventos_cache[0], StreamFinal)
+    cierres = [e for e in eventos if e["event"] == "estimacion_completada"]
+    assert len(cierres) == 1
+    final = cierres[0]
+    assert final["camino"] == "cache_hit"
+    assert final["ttft_ms"] is None
+    assert final["latencia_llm_ms"] is None
 
 
 async def test_stream_fallback_solo_si_el_primario_no_emitio(monkeypatch):

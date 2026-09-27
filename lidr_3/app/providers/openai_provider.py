@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import structlog
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -26,6 +27,7 @@ from openai import (
 from openai import (
     AsyncOpenAI as SDKAsyncOpenAI,
 )
+from openai.types.responses import Response
 
 from ..tracing import emitir
 from .base import BaseProvider, LLMResponse, Message, StreamChunk, StreamDone
@@ -34,6 +36,13 @@ from .errors import LLMProviderError
 # Errores del SDK que el adaptador sabe interpretar como fallos del proveedor.
 # Los demás (bugs internos del adaptador) NO se traducen: deben salir como 500.
 _SDK_ERRORS = (AuthenticationError, RateLimitError, APIConnectionError, APIStatusError)
+
+# Los DOS eventos con los que una respuesta llega cerrada. Un stream cortado
+# cierra con `response.incomplete`, NO con `response.completed`: escuchar solo
+# el cierre feliz deja al service sin `StreamDone` y estalla con
+# "terminó sin cierre". El flag de truncado NO se deduce del nombre del evento
+# sino de `incomplete_details.reason` sobre la respuesta (ver _marcar_truncado).
+_EVENTOS_TERMINALES = ("response.completed", "response.incomplete")
 
 
 class OpenAIProvider(BaseProvider):
@@ -51,6 +60,35 @@ class OpenAIProvider(BaseProvider):
         self.client = SDKAsyncOpenAI(api_key=api_key, timeout=timeout, max_retries=max_retries)
         self.model = model
 
+    def _marcar_truncado(self, respuesta: Response, *, techo: int | None) -> bool:
+        """Si la respuesta llegó cortada, lo asienta en el log y devuelve True.
+
+        Un solo lugar decide qué cuenta como truncado, para que el flag que
+        viaja en la respuesta y la evidencia del log no puedan divergir.
+
+        El log lleva el detalle justo para responder "¿hace falta subir
+        `llm_max_tokens`?": si `tokens_generados` alcanzó `techo_tokens`, el
+        techo fue lo que cortó y corresponde aumentarlo. Si se cortó muy por
+        debajo del techo, el problema es otro y subir el número no lo arregla.
+        Sin este registro esas dos preguntas se responden a ciegas.
+        """
+        details = respuesta.incomplete_details
+        if details is None or details.reason != "max_output_tokens":
+            return False
+
+        usage = respuesta.usage
+        # Proxy fresco por evento, como `emitir`: liga el log a la config
+        # vigente en ese instante en vez de a un logger cacheado al importar.
+        structlog.get_logger(__name__).warning(
+            "response_truncated",
+            provider=self.name,
+            model=respuesta.model,
+            motivo=details.reason,
+            tokens_generados=usage.output_tokens if usage else None,
+            techo_tokens=techo,
+        )
+        return True
+
     async def chat(
         self,
         messages: list[Message],
@@ -62,6 +100,9 @@ class OpenAIProvider(BaseProvider):
             response = await self.client.responses.create(
                 model=self.model,
                 input=[{"role": m.role, "content": m.content} for m in messages],
+                # effort "none" es lo que hace legal mandar `temperature` con modelos >5.0:
+                # con cualquier otro effort la API lo rechaza.
+                # reasoning={"effort": "none"},
                 temperature=temperature if temperature is not None else 0.3,
                 max_output_tokens=max_tokens,
             )
@@ -91,10 +132,7 @@ class OpenAIProvider(BaseProvider):
         return LLMResponse(
             content=response.output_text,
             model=response.model,
-            truncated=(
-                response.incomplete_details is not None
-                and response.incomplete_details.reason == "max_output_tokens"
-            ),
+            truncated=self._marcar_truncado(response, techo=max_tokens),
             usage=(
                 {
                     "input_tokens": usage.input_tokens,
@@ -130,21 +168,21 @@ class OpenAIProvider(BaseProvider):
             async with self.client.responses.stream(
                 model=self.model,
                 input=[{"role": m.role, "content": m.content} for m in messages],
+                # effort "none" es lo que hace legal mandar `temperature` con modelos >5.0:
+                # con cualquier otro effort la API lo rechaza.
+                # reasoning={"effort": "none"},
                 temperature=temperature if temperature is not None else 0.3,
                 max_output_tokens=max_tokens,
             ) as stream:
                 async for event in stream:
                     if event.type == "response.output_text.delta":
                         yield StreamChunk(delta=event.delta)
-                    elif event.type == "response.completed":
+                    elif event.type in _EVENTOS_TERMINALES:
                         response = event.response
                         usage = response.usage
                         yield StreamDone(
                             model=response.model,
-                            truncated=(
-                                response.incomplete_details is not None
-                                and response.incomplete_details.reason == "max_output_tokens"
-                            ),
+                            truncated=self._marcar_truncado(response, techo=max_tokens),
                             usage=(
                                 {
                                     "input_tokens": usage.input_tokens,

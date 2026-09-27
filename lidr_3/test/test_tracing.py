@@ -20,6 +20,8 @@ y por eso se liga a la configuración vigente en ese instante.
 
 from __future__ import annotations
 
+import logging
+
 import fakeredis.aioredis
 import httpx
 import pytest
@@ -28,6 +30,7 @@ from structlog.stdlib import add_log_level
 from structlog.testing import capture_logs
 
 from app.config import Settings
+from app.main import configure_logging
 from app.providers import LLMProviderError, LLMResponse, Message
 from app.providers.openai_provider import OpenAIProvider
 from app.services import llm_service
@@ -37,6 +40,34 @@ TRANSCRIPCION = (
     "El cliente quiere alta de clientes, emisión de comprobantes y reporte "
     "de cobranzas. Se definieron los límites del MVP para esta iteración."
 )
+
+# Third-party namespaces that must never write request/response headers or
+# transport traces into the log. Deliberately duplicated from app.main instead
+# of imported: this list is the test's own claim about the world, so a drift
+# between the two (a renamed transport, a forgotten pin) fails here instead of
+# silently passing. Note the `httpcore2` entry: httpx 0.28 ships httpcore2, so
+# pinning only "httpcore" left the real emitter untouched.
+_HTTP_STACK_ROOTS = frozenset({"httpx", "httpcore", "httpcore2", "openai", "aiohttp", "h11"})
+
+
+@pytest.fixture
+def _restore_logging():
+    """Snapshot and restore global logging state.
+
+    `configure_logging` mutates the ROOT logger and pins third-party loggers
+    process-wide. Without restoring it, these tests would leak DEBUG root
+    level and handler changes into the rest of the suite depending on
+    execution order — the same class of bug as a leaking lru_cache.
+    """
+    root = logging.getLogger()
+    saved_root = (root.level, list(root.handlers))
+    noisy = ("httpx", "httpcore", "httpcore.connection", "httpcore.proxy", "httpcore.http11")
+    saved_noisy = {name: logging.getLogger(name).level for name in noisy}
+    yield
+    root.setLevel(saved_root[0])
+    root.handlers = saved_root[1]
+    for name, level in saved_noisy.items():
+        logging.getLogger(name).setLevel(level)
 
 
 def _respuesta_ok(model: str = "gpt-4o-mini") -> LLMResponse:
@@ -219,3 +250,39 @@ async def test_provider_error_traza_sanitizada():
         for k, v in e.items()
         if k != "event"
     )
+
+
+def test_configure_logging_filtra_los_loggers_http_de_terceros(_restore_logging):
+    """Third-party loggers are pinned to WARNING even at LOG_LEVEL=DEBUG.
+
+    HTTP transport libraries log request and response HEADERS at DEBUG, which is
+    how account identifiers (e.g. `openai-organization`) and Cloudflare
+    `set-cookie` values leaked into the log file. The fix must make DEBUG
+    safe — not forbid DEBUG.
+    """
+    configure_logging("DEBUG")
+
+    # The project's own level IS respected: only library verbosity is pinned,
+    # the project's structlog events still get the level they asked for.
+    assert logging.getLogger().level == logging.DEBUG
+
+    # Every HTTP transport namespace is pinned by its ROOT, so child loggers
+    # created lazily later still inherit WARNING instead of falling back to the
+    # DEBUG root. Asserting the root names covers both current and future
+    # transports without hardcoding every child.
+    for name in ("httpx", "httpcore", "httpcore2", "openai", "aiohttp", "h11"):
+        assert logging.getLogger(name).level == logging.WARNING, name
+
+    # Guard the behaviour, not just the level we happened to set: no logger
+    # belonging to a known third-party HTTP stack may be effectively noisier
+    # than WARNING. This is what catches a transport package being renamed or
+    # replaced — the previous test asserted the level of "httpcore" and stayed
+    # green while the real emitter ("httpcore2") kept dumping headers.
+    for logger_name, logger_obj in list(logging.root.manager.loggerDict.items()):
+        if not isinstance(logger_obj, logging.Logger):
+            continue
+        if logger_name.split(".")[0] in _HTTP_STACK_ROOTS:
+            assert logger_obj.getEffectiveLevel() >= logging.WARNING, (
+                f"{logger_name} would emit DEBUG/INFO into the log: "
+                f"effective level {logging.getLevelName(logger_obj.getEffectiveLevel())}"
+            )

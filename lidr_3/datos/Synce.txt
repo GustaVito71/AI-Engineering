@@ -1,9 +1,6 @@
-Conoces el software SynCE de sourceforge? Los diferentes componentes de Synce se halla en el sitio https://sourceforge.net/projects/synce/files/SynCE/
-Nos interesan 5 de los componentes que se encuentran allí: synce-core libmimedir librra librtfcomp synce-sync-engine
-Por lo que puedo observar, las versiones halladas fueron publicados todos el 2013-07-25, pero tengo conocimiento de versiones más actuales en Launchpad.
-El objetivo es instalar en Debian 12. 
+Conoces el software SynCE de sourceforge? Los diferentes componentes de Synce se halla en el sitio https://sourceforge.net/projects/synce/files/SynCE/ Nos interesan 5 de los componentes que se encuentran allí: synce-core libmimedir librra librtfcomp synce-sync-engine Por lo que puedo observar, las versiones halladas fueron publicados todos el 2013-07-25, pero tengo conocimiento de versiones más actuales en Launchpad. El objetivo es instalar en Debian 12.
 
-¿Puedes estimar el esfuerzo en horas y recursos necesarios para modificar el código fuente? El objetivo es portar el código fuente de los paquetes dependientes de Python 2 a Python 3 y de Pyrex a Cython. 
+¿Puedes estimar el esfuerzo en horas y recursos necesarios para modificar el código fuente? El objetivo es portar el código fuente de los paquetes dependientes de Python 2 a Python 3 y de Pyrex a Cython.
 
 Para aquellos paquetes que posean alguna incompatibilidad, modificar el fuente y crear el paquete DEB correspondiente.
 
@@ -21,5 +18,6 @@ Se confirma que la documentación de foros es insuficiente.
 
 Si el código tiene interacciones con otros módulos, como dbus, gtk, o glib, podría ser necesario actualizar las interfaces a sus versiones correspondientes para Python 3 (python3-dbus, python3-gi, etc.).
 
-
 Haz una prevision pesimista.
+
+Importante: un apartado crucial es el Equipo recomendado; cantidad y aptitudes para todo el proyecto.
