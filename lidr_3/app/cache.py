@@ -18,6 +18,7 @@ import hashlib
 import json
 
 import structlog
+from fastapi import Request
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
@@ -25,6 +26,11 @@ from .config import Settings
 from .context.examples import build_system_prompt
 
 logger = structlog.get_logger(__name__)
+
+# Clave de app.state donde el lifespan publica el cliente. El router lo lee
+# por dependency, no por importar el cliente: así los tests pueden inyectar un
+# fakeredis (o None) sin conocer la clave.
+CLIENTE_CACHE = "cache_client"
 
 
 def build_cache_key(transcription: str, settings: Settings) -> str:
@@ -73,3 +79,64 @@ async def set_cached_estimation(client: Redis, key: str, resultado: dict, ttl: i
         await client.set(key, json.dumps(resultado), ex=ttl)
     except (RedisError, TypeError):
         logger.warning("Cache Redis no disponible en escritura; respuesta sin cachear")
+
+
+# Un cache lento es peor que un cache ausente: si Redis está caído pero el
+# socket no cierra, cada request cuelga hasta este timeout. 1s deja margen de
+# sobra para un Redis sano en localhost y acota el daño cuando no lo está.
+_TIMEOUT_SEGUNDOS = 1.0
+
+
+async def crear_cliente_cache(settings: Settings) -> Redis | None:
+    """Cliente Redis para el lifespan, o None si no hay cache.
+
+    Devolver `None` (y no un cliente roto) cuando `REDIS_URL` está vacío es lo
+    que permite desactivar el cache por configuración, sin código: es el
+    escape hatch para desarrollo y para tests que no quieren Redis.
+
+    Un `PING` con timeout AL ARRANQUE no se usa para decidir nada: `from_url`
+    es lazy y no conecta, así que el fallo real aparecería en el primer request
+    de cada usuario. Se hace para loguear el estado real de la infraestructura
+    una vez, y su fallo es inocuo (warn) porque el servicio ya es fail-soft.
+    """
+    if not settings.redis_url:
+        logger.info("Cache desactivado: REDIS_URL vacío")
+        return None
+    cliente = Redis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_connect_timeout=_TIMEOUT_SEGUNDOS,
+        socket_timeout=_TIMEOUT_SEGUNDOS,
+    )
+    try:
+        await cliente.ping()
+    except RedisError as exc:
+        # No se propaga: el cliente se entrega igual. Si Redis está caído ahora
+        # pero vuelve, el cache se recupera solo en la request siguiente sin
+        # reiniciar el servicio.
+        logger.warning(
+            "Redis no responde al PING de arranque; se sigue con fail soft", error=str(exc)
+        )
+    else:
+        logger.info("Cache Redis conectado", redis_url=settings.redis_url)
+    return cliente
+
+
+async def cerrar_cliente_cache(cliente: Redis | None) -> None:
+    """Cierra el pool de conexiones del cliente. Idempotente y fail-soft."""
+    if cliente is None:
+        return
+    try:
+        await cliente.aclose()
+    except RedisError as exc:
+        logger.warning("No se pudo cerrar el cliente de Redis limpiamente", error=str(exc))
+
+
+async def get_cache_client(request: Request) -> Redis | None:
+    """Dependency de FastAPI: el cliente del lifespan, o None si no hay cache.
+
+    `getattr` y no `[...]`: sin lifespan (un test que monta la app con
+    TestClient sin contexto, o una app construida a mano) no hay cliente, y eso
+    es el estado válido "sin cache", no un error a propagar.
+    """
+    return getattr(request.app.state, CLIENTE_CACHE, None)

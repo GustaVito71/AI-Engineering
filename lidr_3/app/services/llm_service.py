@@ -387,9 +387,17 @@ async def generate_estimation(
                 transcription, settings, settings.llm_fallback
             )
             used_fallback = True
-        except LLMProviderError as exc2:
+        except (LLMProviderError, LLMConfigurationError) as exc2:
             # El error que ve el cliente es uno fijo; la traza de AMBOS
             # intentos queda encadenada en el log del servidor.
+            #
+            # LLMConfigurationError entra en la misma rama a propósito: un
+            # fallback declarado sin su key es un fallo del salto, no un
+            # rechazo de la request. Si se dejara escapar, el router lo
+            # traduciría a 503 "rechazada por configuración" cuando el
+            # servicio SÍ está configurado y lo que falló fue un rate limit
+            # transitorio del primario. El cliente leería que su config está
+            # rota y no que debe reintentar.
             raise LLMServiceError(
                 f"Fallo del proveedor '{settings.llm_provider}' "
                 f"y del fallback '{settings.llm_fallback}'"
@@ -524,7 +532,9 @@ async def stream_estimation(
             )
             proveedor = settings.llm_fallback
             used_fallback = True
-        except LLMProviderError as exc2:
+        except (LLMProviderError, LLMConfigurationError) as exc2:
+            # Mismo criterio que en `generate_estimation`: un fallback sin su
+            # key es un fallo del salto (502), no un rechazo de la request.
             raise LLMServiceError(
                 f"Fallo del proveedor '{settings.llm_provider}' "
                 f"y del fallback '{settings.llm_fallback}'"

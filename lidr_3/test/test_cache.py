@@ -16,11 +16,21 @@ Se usa fakeredis (no un Redis real): misma interfaz async, cero red.
 from __future__ import annotations
 
 import fakeredis.aioredis
+from fastapi.testclient import TestClient
 from redis.exceptions import ConnectionError
 
-from app.cache import build_cache_key, get_cached_estimation, set_cached_estimation
-from app.config import Settings
-from app.providers import LLMProviderError, LLMResponse
+from app import main
+from app.cache import (
+    build_cache_key,
+    cerrar_cliente_cache,
+    crear_cliente_cache,
+    get_cache_client,
+    get_cached_estimation,
+    set_cached_estimation,
+)
+from app.config import Settings, get_settings
+from app.main import create_app
+from app.providers import LLMProviderError, LLMResponse, StreamChunk, StreamDone
 from app.services import llm_service
 
 TRANSCRIPCION = (
@@ -206,3 +216,192 @@ async def test_get_cached_estimation_roundtrip():
     recuperado = await get_cached_estimation(cache, clave)
 
     assert recuperado == original
+
+
+# ─── El cableado: lifespan publica el cliente, el router lo consume ─────
+#
+# Los tests de arriba verifican la SEMANTICA de la cache llamando al
+# servicio directamente con un cliente pasado a mano. Estos verifican lo que
+# faltaba: que el cliente llegue solo. Si `get_cache_client` no estuviera en la
+# dependency del router, o el lifespan no publicara nada, TODOS los tests de
+# arriba seguirían en verde y el cache no funcionaría en la app real.
+
+
+def _app_con_cache(cliente) -> TestClient:
+    """App con el cache inyectado, saltando el lifespan real (que abriría el
+    Redis de la máquina). Se sobreescriben las DOS dependencies: los settings
+    para no leer la OPENAI_API_KEY del shell, y el cliente para no tocar
+    Redis."""
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: _make_settings()
+    app.dependency_overrides[get_cache_client] = lambda: cliente
+    return TestClient(app)
+
+
+def test_el_estimador_consume_el_cliente_inyectado(monkeypatch):
+    """Dos POST idénticos: el segundo debe servirse del cache.
+
+    La prueba de que el cableado existe es el CONTEO DE LLAMADAS al proveedor:
+    si el router no pasara el cliente, serían dos y el assert falla."""
+    llamadas: list[str] = []
+
+    def fake_create(name, api_key, model, *, timeout, max_retries):
+        llamadas.append(name)
+
+        class FakeProvider:
+            async def chat(self, messages, *, max_tokens=None, temperature=None):
+                return _respuesta_ok()
+
+        return FakeProvider()
+
+    monkeypatch.setattr(llm_service, "create_provider", fake_create)
+    cache = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    with _app_con_cache(cache) as c:
+        primero = c.post("/api/v1/estimate", json={"transcription": TRANSCRIPCION})
+        segundo = c.post("/api/v1/estimate", json={"transcription": TRANSCRIPCION})
+
+    assert primero.status_code == 200
+    assert segundo.status_code == 200
+    assert llamadas == ["openai"], f"el cache no evitó la segunda llamada: {llamadas}"
+    assert primero.json() == segundo.json()
+
+
+def test_el_stream_tambien_consume_el_cliente(monkeypatch):
+    """El endpoint SSE también recibe el cliente: mismo contrato, mismo cache."""
+    llamadas: list[str] = []
+
+    def fake_create(name, api_key, model, *, timeout, max_retries):
+        class FakeProvider:
+            async def chat(self, messages, *, max_tokens=None, temperature=None):
+                return _respuesta_ok()
+
+            async def chat_stream(self, messages, *, max_tokens=None, temperature=None):
+                llamadas.append(name)
+                yield StreamChunk(delta="## Total\n")
+                yield StreamChunk(delta="**80 horas**\n")
+                yield StreamDone(
+                    model="gpt-4o-mini",
+                    truncated=False,
+                    usage={"input_tokens": 50, "output_tokens": 20},
+                )
+
+        return FakeProvider()
+
+    monkeypatch.setattr(llm_service, "create_provider", fake_create)
+    cache = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    with _app_con_cache(cache) as c:
+        primero = c.post("/api/v1/estimate/stream", json={"transcription": TRANSCRIPCION})
+        segundo = c.post("/api/v1/estimate/stream", json={"transcription": TRANSCRIPCION})
+
+    assert primero.status_code == 200
+    assert "event: meta" in primero.text, "un miss debe abrir con meta"
+    assert "event: estimation" in primero.text
+    # Cache hit: el contrato es SOLO `estimation`, sin meta ni delta.
+    assert "event: estimation" in segundo.text
+    assert "event: meta" not in segundo.text, "un cache hit no debe emitir meta"
+    assert "event: delta" not in segundo.text, "un cache hit no debe emitir delta"
+    assert llamadas == ["openai"], f"el stream no consultó el cache: {llamadas}"
+
+
+def test_sin_cliente_de_cache_la_estimacion_sigue_funcionando(monkeypatch):
+    """`REDIS_URL` vacío -> sin cache. La estimación NO puede depender de que
+    haya Redis: es una optimización, no un requisito."""
+    llamadas: list[str] = []
+
+    def fake_create(name, api_key, model, *, timeout, max_retries):
+        llamadas.append(name)
+
+        class FakeProvider:
+            async def chat(self, messages, *, max_tokens=None, temperature=None):
+                return _respuesta_ok()
+
+        return FakeProvider()
+
+    monkeypatch.setattr(llm_service, "create_provider", fake_create)
+
+    with _app_con_cache(None) as c:
+        r = c.post("/api/v1/estimate", json={"transcription": TRANSCRIPCION})
+
+    assert r.status_code == 200
+    assert r.json()["provider"] == "openai"
+    assert llamadas == ["openai"]
+
+
+def test_redis_caido_no_tumba_la_estimacion_por_http(monkeypatch):
+    """El fail-soft del servicio tiene que sobrevivir también a través de HTTP,
+    no solo en la llamada directa al servicio."""
+    llamadas: list[str] = []
+
+    def fake_create(name, api_key, model, *, timeout, max_retries):
+        llamadas.append(name)
+
+        class FakeProvider:
+            async def chat(self, messages, *, max_tokens=None, temperature=None):
+                return _respuesta_ok()
+
+        return FakeProvider()
+
+    monkeypatch.setattr(llm_service, "create_provider", fake_create)
+
+    class RedisCaido:
+        async def get(self, key: str) -> str | None:  # pragma: no cover
+            raise ConnectionError("Redis no está corriendo")
+
+        async def set(self, key: str, value: str, *, ex: int | None = None) -> None:
+            raise ConnectionError("Redis no está corriendo")
+
+    with _app_con_cache(RedisCaido()) as c:
+        r = c.post("/api/v1/estimate", json={"transcription": TRANSCRIPCION})
+
+    assert r.status_code == 200, "un Redis caído no puede producir un 5xx"
+    assert r.json()["provider"] == "openai"
+
+
+async def test_crear_cliente_cache_devuelve_none_si_redis_url_esta_vacio():
+    """El escape hatch por configuración: REDIS_URL vacío = cache desactivado,
+    sin tocar código."""
+    assert await crear_cliente_cache(_make_settings(redis_url="")) is None
+
+
+async def test_el_lifespan_publica_el_cliente_y_lo_cierra(monkeypatch):
+    """El cliente vive en app.state y se cierra al salir: sin pool de
+    conexiones colgando entre tests ni en un shutdown."""
+    app = create_app()
+    cliente = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cerrados: list[str] = []
+
+    async def fake_crear(settings):
+        return cliente
+
+    async def fake_cerrar(c):
+        cerrados.append("cerrado")
+        await c.aclose()
+
+    monkeypatch.setattr(main, "crear_cliente_cache", fake_crear)
+    monkeypatch.setattr(main, "cerrar_cliente_cache", fake_cerrar)
+    app.dependency_overrides[get_settings] = lambda: _make_settings()
+
+    with TestClient(app) as c:
+        assert c.app.state.cache_client is cliente, "el lifespan no publicó el cliente"
+        assert c.get("/health").status_code == 200
+
+    assert cerrados == ["cerrado"], "el lifespan no cerró el cliente al salir"
+
+
+async def test_cerrar_cliente_cache_es_no_op_sin_cliente():
+    """Sin cliente (cache desactivado) no hay nada que cerrar, y eso no es un
+    error: es el estado normal de un despliegue con REDIS_URL vacío."""
+    await cerrar_cliente_cache(None)
+
+
+async def test_cerrar_cliente_cache_no_propaga_un_fallo_de_redis():
+    """Un `aclose()` que falla no puede tumbar el shutdown de la app."""
+    from redis.exceptions import RedisError
+
+    class ClienteQueNoCierra:
+        async def aclose(self) -> None:
+            raise RedisError("conexión colgada")
+
+    await cerrar_cliente_cache(ClienteQueNoCierra())

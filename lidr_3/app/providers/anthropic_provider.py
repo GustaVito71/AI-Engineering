@@ -145,7 +145,13 @@ class AnthropicProvider(BaseProvider):
                 messages=user_messages,
                 max_tokens=max_tokens,
             ) as stream:
-                async for chunk in stream.until_done():
+                # El stream se itera DIRECTAMENTE: `AsyncMessageStream` es
+                # asíncrono iterable. `until_done()` no sirve aquí — está
+                # anotado `-> None`, consume el stream hasta el final y no
+                # devuelve el iterador de eventos. Usarlo de las dos formas
+                # rompe el streaming de Anthropic entero, que es justo el
+                # camino del fallback.
+                async for chunk in stream:
                     if chunk.type == "message_start":
                         model = chunk.message.model
                         usage = chunk.message.usage

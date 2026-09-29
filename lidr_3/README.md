@@ -24,6 +24,8 @@ Los ejemplos pesan más que las instrucciones. Por eso:
 - [uv](https://docs.astral.sh/uv/) como gestor de paquetes
 - Cuenta activa en OpenAI Platform y/o Anthropic con créditos disponibles
 - API key disponible como variable de entorno o en `.env`
+- Redis (opcional): sin él el servicio funciona igual, solo que cada request
+  genera de nuevo. `docker run -d -p 6379:6379 redis:7-alpine`
 
 ## Puesta en marcha
 
@@ -100,13 +102,14 @@ curl -N -X POST http://localhost:8001/api/v1/estimate/stream \
 
 | Evento | Payload | Cuándo |
 |---|---|---|
-| `meta` | `{"proveedor", "camino"}` | primero, siempre. `camino` es `primario`, `secundario` (fallback), `cache` o `degradado` |
+| `meta` | `{"proveedor", "camino"}` | primero, en el camino primario y en el de fallback. `camino` es `primario` o `fallback` (es el nombre real; no existe `secundario` ni `degradado`). **En cache hit no se emite**: ese caso devuelve un único `estimation` |
 | `delta` | `{"texto"}` | fragmentos del Markdown, en orden |
 | `estimation` | estimación completa (misma forma que `/estimate`) | último, una vez |
 
 Reglas del contrato (cubiertas por `test/test_streaming.py`):
 
-- **Fallo antes del primer byte** → error HTTP real (503 sin key, 502 si ambos proveedores fallan, 422 si la transcripción está fuera de límites). No hay stream que cortar: el cliente recibe un status y un `detail`.
+- **Fallo antes del primer byte** → error HTTP real (503 sin key, 502 si el primario falla, 422 si la transcripción está fuera de límites). No hay stream que cortar: el cliente recibe un status y un `detail`.
+- **El 503 es solo "no me configuraste"**: falta la key del **primario**. Si el primario falla y el fallback tampoco puede usarse (porque no está declarado, o porque se declaró sin su key), el resultado es **502**, no 503 — el servicio del cliente está bien configurado y lo correcto es reintentar. Por eso el detalle de un 502 nunca menciona variables de entorno.
 - **Fallo después del primer fragmento** → el stream ya empezó, no se puede cambiar el status: viaja como evento `error` y el cliente debe tratarlo como estimado incompleto.
 - **Cache hit** → un único evento `estimation`, sin `delta`. No se llama al proveedor.
 - **Fallback** → solo puede ocurrir antes del primer fragmento (de ahí que solo haya un salto configurable, `llm_fallback`). Un `RateLimitError` o `5xx` del primario habilita el secundario; el resto de `4xx` no.
@@ -156,7 +159,13 @@ Casos borde que vale la pena ver a mano:
 | Transcripción de < 50 caracteres | 422 con el detalle de validación; **no** se gasta un token |
 | API apagada (Ctrl+C) y estimar desde la UI | "No se pudo conectar…", no un traceback |
 | API apagada y estimar por `curl -N` | 502 con el detalle de los dos proveedores |
-| Repetir la misma transcripción | `camino: cache` y un único evento `estimation` |
+| Repetir la misma transcripción | un único evento `estimation`, sin `meta` ni `delta`. En el log: `camino=cache_hit` |
+
+Para ver el cache hit hace falta Redis. Sin él la fila no aplica:
+
+```bash
+docker run -d -p 6379:6379 redis:7-alpine
+```
 | `Probar conexión` sin key en `.env` | "Conectado: … FALTA API KEY" + aviso de qué variable poner |
 
 Si el puerto está tomado (el clásico `address already in use`):
@@ -209,7 +218,7 @@ reales de terceros no se pierden.
 | Dimensión | Dónde | Qué responde |
 | --- | --- | --- |
 | Contenido | `contenido_intento` (DEBUG) | Prompt completo y respuesta literal |
-| Camino | `intento_proveedor` + `estimacion_completada` | ¿Cache, primario o fallback? ¿Cuántos intentos? |
+| Camino | `intento_proveedor` + `estimacion_completada` | ¿`cache_hit`, `primario` o `fallback`? ¿Cuántos intentos? |
 | Costo | `estimacion_completada` | Tokens reales × LLMPrice, con `None` + nota si no hay precio |
 
 ```text
@@ -240,7 +249,7 @@ uv run ruff check .   # lint
 uv run ruff format .  # formato
 ```
 
-La suite cubre, entre otros: el invariante CAG (ejemplos en el system prompt), que la transcripción viaja como dato delimitado, que una entrada fuera de límites NO llama al LLM (no se gasta un token), que un error del proveedor no se filtra al cliente, que `/health` responde aunque falte la API key, el coste (tokens reales × precios de LLMPrice, con `None` + nota cuando no se puede calcular), y **la estructura de carpetas del ejercicio** (`test/test_estructura.py`). Los tests mockean el LLM: corren sin keys.
+La suite cubre, entre otros: el invariante CAG (ejemplos en el system prompt), que la transcripción viaja como dato delimitado, que una entrada fuera de límites NO llama al LLM (no se gasta un token), que un error del proveedor no se filtra al cliente, que `/health` responde aunque falte la API key, el coste (tokens reales × precios de LLMPrice, con `None` + nota cuando no se puede calcular), el **cableado del cache** (que el cliente del lifespan llegue de verdad a los dos endpoints, y que un Redis caído o un `REDIS_URL` vacío no rompan la estimación), y **la estructura de carpetas del ejercicio** (`test/test_estructura.py`). Los tests mockean el LLM: corren sin keys.
 
 ## Validación automática (pipeline)
 
@@ -253,17 +262,22 @@ mecanismos:
    El resto de la suite prueba el flujo completo (recibir → inyectar contexto
    → "LLM" → respuesta) con proveedores mockeados, así el pipeline corre sin
    API keys.
-2. **CI automático** (`.github/workflows/ci.yml` en la **raíz del monorepo**):
-   se ejecuta en cada `push` y `pull_request` (filtrado a `lidr_2/**` en paths)
+2. **CI automático** (`.github/workflows/ci-lidr3.yml` en la **raíz del monorepo**):
+   se ejecuta en cada `push` y `pull_request` (filtrado a `lidr_3/**` en paths)
    con la misma suite + lint. `uv sync --locked` falla si `uv.lock` está
-   desincronizado del `pyproject.toml` — así "se me olvidó regenerar el lock"
+   desincronizado del `pyproject.toml` — así "se me olvidé regenerar el lock"
    es un error de CI hoy y no una sorpresa después.
 
 > Por qué en la raíz: GitHub Actions solo descubre workflows en el
-> `.github/workflows` de la raíz del repo (aunque sí recorre sus subcarpetas).
-> Un `lidr_2/.github/workflows/ci.yml` nunca se ejecuta — de hecho el pipeline
-> no corrió hasta que se movió. `defaults.run.working-directory: lidr_2`
-> ejecuta la suite dentro de este proyecto.
+> `.github/workflows` de la raíz del repo (aunque sí recorre sus subcarpetas),
+> así que un `lidr_3/.github/workflows/ci.yml` nunca se ejecutaría.
+> `defaults.run.working-directory: lidr_3` es lo que corre la suite de este
+> proyecto dentro del monorepo.
+
+Cada proyecto del monorepo tiene su propio workflow de alcance propio
+(`ci.yml` para `lidr_2`, `ci-lidr3.yml` para este). No comparten matriz a
+propósito: un filtro de paths que cubriera varios proyectos dispararía la
+suite completa de todos para cada cambio en cualquiera de ellos.
 
 ```text
 push / pull_request
@@ -279,13 +293,14 @@ app/
 ├── main.py            # FastAPI, /health independiente de la configuración
 ├── config.py          # Settings: defaults coherentes por proveedor
 ├── context/           # el cache CAG: ejemplos + build_system_prompt
+├── cache.py           # cliente Redis + fail-soft (agnóstico del dominio)
 ├── services/          # dominio: LLMServiceError, delimitador, truncado, streaming
 ├── providers/         # adaptadores OpenAI/Anthropic (interfaz común)
 └── routers/           # validación de entrada + traducción a HTTP (JSON y SSE)
 streamlit_app.py       # cliente de turno único; el parser SSE vive acá
 test/                  # suite + test/test_estructura.py (valida este árbol)
 datos/transcripcion_reunion.md   # la transcripción canónica (parámetro)
-../.github/workflows/ci.yml      # pipeline (raíz del monorepo, scope lidr_2/**)
+../.github/workflows/ci-lidr3.yml  # pipeline (raíz del monorepo, scope lidr_3/**)
 ```
 
 `test/test_estructura.py` verifica esta estructura de forma automática: si
@@ -303,5 +318,11 @@ Capas: router → service → context/config/providers. Ningún router conoce el
   ahí sí va CORS con `allow_origins` explícito desde Settings.
 - **No hay base de datos**: decisión del ejercicio, no algo pendiente.
 - **No hay autenticación**: la API es local/de aprendizaje.
+- **El cache Redis es una optimización, nunca un requisito**: si Redis está
+  caído, corrupto o simplemente no configurado (`REDIS_URL` vacío), cada request
+  genera de nuevo y responde 200 igual. Los timeouts son cortos a propósito
+  (1 s) para que un Redis colgado no alargue la latencia de quien espera una
+  estimación. Solo se cachea la respuesta del **primario** exitoso: cachear la
+  del fallback mentiría sobre el origen y el costo de una respuesta futura.
 - El coste está acotado: la entrada tiene techo (`ESTIMATION_MAX_CHARS`, validado antes de llamar al LLM), el cliente tiene `timeout`/`max_retries` explícitos y la salida tiene `max_tokens`.
 - **El coste se reporta por llamada** (`cost_usd` + `cost_note`) usando la base de precios de LLMPrice (snapshot local, sin red). No hay `GET /usage`: no es parte del alcance del ejercicio.

@@ -44,6 +44,20 @@ _SDK_ERRORS = (AuthenticationError, RateLimitError, APIConnectionError, APIStatu
 # sino de `incomplete_details.reason` sobre la respuesta (ver _marcar_truncado).
 _EVENTOS_TERMINALES = ("response.completed", "response.incomplete")
 
+# Temperatura por defecto. Va baja a propósito: el output es una estimación
+# tabular y una muestra más creativa se traduce en formatos inventados y
+# subtotales que el prompt prohíbe explícitamente (ver _validar_estimacion).
+# Fijada como constante y no como literal en las dos llamadas porque es una
+# decisión de formato, no un parámetro de afinado: hoy ningún caller pasa
+# `temperature` y ambos caminos (chat y chat_stream) deben salir idénticos.
+#
+# Ojo: la Responses API rechaza `temperature` en modelos de razonamiento >5.0
+# salvo que effort sea "none". Por eso el `reasoning={"effort": "none"}` está
+# comentado abajo: es el que haría legal mandar este campo. El modelo
+# configurado hoy (gpt-4o-mini) no lo exige, pero cambiar de modelo sin
+# descomentar eso rompe la llamada con un 400.
+_TEMPERATURA_DEFAULT = 0.3
+
 
 class OpenAIProvider(BaseProvider):
     name = "openai"
@@ -101,9 +115,9 @@ class OpenAIProvider(BaseProvider):
                 model=self.model,
                 input=[{"role": m.role, "content": m.content} for m in messages],
                 # effort "none" es lo que hace legal mandar `temperature` con modelos >5.0:
-                # con cualquier otro effort la API lo rechaza.
+                # con cualquier otro effort la API lo rechaza. Ver _TEMPERATURA_DEFAULT.
                 # reasoning={"effort": "none"},
-                temperature=temperature if temperature is not None else 0.3,
+                temperature=temperature if temperature is not None else _TEMPERATURA_DEFAULT,
                 max_output_tokens=max_tokens,
             )
         except _SDK_ERRORS as exc:
@@ -171,7 +185,7 @@ class OpenAIProvider(BaseProvider):
                 # effort "none" es lo que hace legal mandar `temperature` con modelos >5.0:
                 # con cualquier otro effort la API lo rechaza.
                 # reasoning={"effort": "none"},
-                temperature=temperature if temperature is not None else 0.3,
+                temperature=(temperature if temperature is not None else _TEMPERATURA_DEFAULT),
                 max_output_tokens=max_tokens,
             ) as stream:
                 async for event in stream:

@@ -91,26 +91,46 @@ class _FakeSdkStream:
 
 
 class _FakeAnthropicManager:
-    """Simula el manager de `messages.stream`: CM + until_done()."""
+    """Simula el manager de `messages.stream` abiding SU contrato real.
+
+    Importante: el doble reproduce la API del SDK 1.8.0, no una versión
+    conveniente. `AsyncMessageStream` es asíncrono iterable (se itera con
+    `async for chunk in stream`), y `until_done()` es una corrutina anotada
+    `-> None` que consume el stream hasta el final y NO devuelve el iterador.
+
+    Una versión anterior de este doble hacía que `until_done()` devolviera un
+    generador, que es lo que el adaptador asumía por error. Con ese doble el
+    bug pasaba la suite entera y reventaba contra la API real: un test que
+    miente sobre la API hace invisible el bug que justamente_probea.
+    """
 
     def __init__(self, eventos: list, error: Exception | None = None):
         self._eventos = list(eventos)
         self.error = error
+        self._consumido = False
 
     async def __aenter__(self):
         if self.error is not None:
             raise self.error
+        self._consumido = False
         return self
 
     async def __aexit__(self, *exc_info):
         return False
 
-    def until_done(self):
-        async def generador():
-            for evento in self._eventos:
-                yield evento
+    def __aiter__(self):
+        return self
 
-        return generador()
+    async def __anext__(self):
+        if not self._eventos:
+            raise StopAsyncIteration
+        return self._eventos.pop(0)
+
+    async def until_done(self) -> None:
+        # Contrato real: consume y devuelve None. Si el adaptador lo usara
+        # como iterador, `async for` fallaría con NoneType.
+        self._consumido = True
+        self._eventos.clear()
 
 
 def _sdk_error(cls, status: int) -> Exception:
@@ -656,3 +676,83 @@ def test_endpoint_sse_muerte_a_mitad_baja_como_evento_error(monkeypatch):
     assert tipos == ["meta", "delta", "error"]
     assert "No se pudo completar" in eventos[-1][1]["detail"]
     assert llamadas == ["openai"], "no se intenta el fallback a mitad"
+
+
+async def test_stream_fallback_sin_key_es_fallo_del_salto_y_no_config(monkeypatch):
+    """El mismo bug que el de `chat`, en el camino de streaming.
+
+    LLM_FALLBACK declarado sin su key es un fallo del salto, no un rechazo de
+    la request. Si `LLMConfigurationError` se escapara del `except` del
+    fallback, el router lo serviría como 503 y el cliente leería que su
+    configuración está rota, cuando lo que pasó fue un rate limit del
+    primario y un fallback sin key: la acción correcta es reintentar.
+    """
+    llamadas: list[str] = []
+    monkeypatch.setattr(
+        llm_service,
+        "create_provider",
+        _fake_provider_factory(llamadas, primario_falla="rate limit"),
+    )
+    settings = _make_settings(
+        llm_provider="openai",
+        openai_api_key="k",
+        llm_fallback="anthropic",
+        anthropic_api_key=None,  # el fallback NO tiene key
+    )
+
+    with pytest.raises(llm_service.LLMServiceError) as excinfo:
+        [e async for e in stream_estimation(TRANSCRIPCION, settings)]
+
+    assert not isinstance(excinfo.value, llm_service.LLMConfigurationError)
+    assert "openai" in str(excinfo.value) and "anthropic" in str(excinfo.value)
+    # El fallback ni se construyó: la key se exige antes de abrir el stream.
+    assert llamadas == ["openai"]
+
+
+async def test_anthropic_stream_se_itera_a_si_mismo_no_con_until_done():
+    """El adaptador debe iterar el manager, no su `until_done()`.
+
+    Fijado explícitamente porque el doble anterior hacía que `until_done()`
+    devolviera un iterador: el test pasaba mientras la llamada real fallaba con
+    "'async for' requires an object with __aiter__ method". Si alguien
+    reintroduce `until_done()`, este test lo dice en el mensaje.
+    """
+    provider = AnthropicProvider(api_key="k", model="claude-haiku-4-5")
+    eventos = [
+        SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                model="claude-haiku-4-5-20251001",
+                usage=SimpleNamespace(input_tokens=7),
+            ),
+        ),
+        SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="text_delta", text="hola"),
+        ),
+        SimpleNamespace(
+            type="message_delta",
+            delta=SimpleNamespace(stop_reason="end_turn"),
+            usage=SimpleNamespace(output_tokens=3),
+        ),
+    ]
+    capturado = {}
+
+    def fake_stream(**kwargs):
+        manager = _FakeAnthropicManager(eventos)
+        capturado["manager"] = manager
+        return manager
+
+    provider.client.messages.stream = fake_stream
+
+    recibidos = [
+        e
+        async for e in provider.chat_stream([Message(role="user", content="hola")], max_tokens=100)
+    ]
+
+    assert [type(e).__name__ for e in recibidos] == ["StreamChunk", "StreamDone"]
+    # La prueba: `until_done()` NO se usó, así que el flag sigue en False.
+    assert capturado["manager"]._consumido is False, (
+        "el adaptador está usando until_done() en vez de iterar el stream: "
+        "contra la API real eso es un TypeError, aunque el doble lo tolerase"
+    )

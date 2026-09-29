@@ -287,8 +287,10 @@ def test_el_modelo_se_resuelve_desde_el_default_del_proveedor():
 
 
 def test_campos_opcionales_vacios_se_normalizan_al_default():
-    """Un .env copiado de .env.example trae APP_ENV= y LOG_LEVEL= vacíos;
-    eso significa "no configurado", no debe romper ni quedar en vacío."""
+    """Un .env escrito a mano puede dejar campos opcionales vacíos (APP_ENV=,
+    LOG_LEVEL=); eso significa "no configurado" y debe caer al default, no
+    romper ni quedar en vacío. El .env.example de ahora los trae con valor,
+    así que esto cubre el .env editado a mano, no una copia del ejemplo."""
     s = make_settings(app_env="", log_level="")
     assert s.app_env == "local"
     assert s.log_level == "INFO"

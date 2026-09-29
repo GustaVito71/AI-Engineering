@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import Depends, FastAPI
 
+from .cache import cerrar_cliente_cache, crear_cliente_cache
 from .config import Settings, get_settings
 from .routers.estimations import router as estimations_router
 
@@ -74,8 +75,17 @@ def configure_logging(level: str = "INFO") -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging(get_settings().log_level)
-    yield
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    # El cliente de Redis vive en app.state y lo consume el router por
+    # dependency. Se cierra en el `finally` para que el pool de conexiones no
+    # quede abierto si el arranque falla a mitad o si hay un shutdown abrupto.
+    cliente = await crear_cliente_cache(settings)
+    app.state.cache_client = cliente
+    try:
+        yield
+    finally:
+        await cerrar_cliente_cache(cliente)
 
 
 def create_app() -> FastAPI:
