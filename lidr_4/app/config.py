@@ -39,14 +39,44 @@ QUÉ CAMBIÓ RESPECTO DE LIDR_3 Y POR QUÉ
 """
 
 from functools import lru_cache
+from typing import Annotated, Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import BeforeValidator, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VARIABLE_DE_API_KEY = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
 }
+
+# `log_level` es el único campo con dominio cerrado que además decide algo:
+# main.configure_logging lo pasa a logging.setLevel, así que un valor inválido
+# muere al arrancar. `Literal` no cambia ese comportamiento —la stdlib ya
+# rechazaba con `ValueError: Unknown level`— pero mueve el error al lado de
+# Pydantic, que nombra el campo y lista los valores válidos en vez de dejar
+# `Unknown level: 'info'` a secas.
+#
+# El `BeforeValidator` no es decorativo: sin él, un `LOG_LEVEL=` vacío rompería
+# el arranque, porque `Literal` rechaza `""` antes de que `aplicar_defaults`
+# pueda convertirlo en el default. Eso rompería la regla heredada de `lidr_3`
+# —cadena vacía = "no configurado"— que el punto 2 del docstring declara como
+# principio. Se normaliza antes de validar el dominio: vacío y sin espacios van
+# al default, y cualquier otra cosa se pasa a `Literal` sin tocar, para que un
+# `info` en minúscula siga siendo un error en vez de un(DEFAULT silencioso.
+#
+# `app_env` sigue siendo `str` a propósito: hoy no ramifica en ningún lado, se
+# solo muestra en /health. Tiparlo sería validar un valor del que nadie depende.
+NIVELES_DE_LOG = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+def _normalizar_log_level(valor: str) -> str:
+    """Vacío = "no configurado" = default, igual que el resto de Settings.
+
+    Solo contempla el caso vacío. No hace `.upper()` a propósito: un `LOG_LEVEL=info`
+    es un `.env` mal puesto, y silenciarlo a `INFO` esconde el error detrás de un
+    default. Que muera al arrancar es el comportamiento que se busca."""
+    return valor or "INFO"
+
 
 # El contrato de `description` vive en el Field de
 # app.schemas.estimation.EstimationRequest. Se replica acá porqueSettings no
@@ -128,7 +158,7 @@ class Settings(BaseSettings):
 
     # --- Servicio.
     app_env: str = "local"
-    log_level: str = "INFO"
+    log_level: Annotated[NIVELES_DE_LOG, BeforeValidator(_normalizar_log_level)] = "INFO"
     app_port: int = 8001
 
     @model_validator(mode="after")
@@ -140,13 +170,13 @@ class Settings(BaseSettings):
         configuración y muere acá, no a mitad de una request.
         """
         self.app_env = self.app_env or "local"
-        self.log_level = self.log_level or "INFO"
         self.primary_model = self.primary_model or "openai/gpt-4o-mini"
         self.fallback_model = self.fallback_model or "anthropic/claude-haiku-4-5"
         # pydantic-settings parsea un `PROMPT_VERSION=` vacío como "", y "" no
         # es un nombre de archivo válido: un .env a medio completar rompería el
-        # arranque en el peor momento. Acá sí se valida el dominio, porque el
-        # campo es str y no un Literal.
+        # arranque en el peor momento. Acá se valida el dominio a mano porque
+        # `log_level` sí es un Literal y no necesita esto: su campo normaliza
+        # el vacío en un BeforeValidator, que corre antes de validar el dominio.
         if not self.prompt_version:
             raise ValueError("PROMPT_VERSION no puede estar vacío")
         self.llm_model_group = self.llm_model_group or "estimator"

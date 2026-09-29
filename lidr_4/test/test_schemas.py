@@ -232,3 +232,47 @@ def test_un_techo_igual_al_contrato_no_cambia_nada(monkeypatch, descripcion):
     monkeypatch.setenv("DESCRIPCION_MIN_CHARS", str(CONTRATO_MIN_CHARS))
     monkeypatch.setenv("DESCRIPCION_MAX_CHARS", str(CONTRATO_MAX_CHARS))
     assert construir(descripcion) is not None
+
+
+# --- `log_level`: dominio cerrado sin romper la regla de "vacío = default".
+#
+# No es parte del contrato HTTP, pero el `Literal` lo introduction una
+# regresión real que casi se cuela: `Literal` rechaza `""` antes de que
+# `aplicar_defaults` pueda convertirlo, así que un `LOG_LEVEL=` vacío pasaba a
+# romper el arranque. El principio 2 del docstring de config.py dice que cadena
+# vacía = "no configurado". Estos tests lo fijan.
+
+
+def test_log_level_vacio_usa_el_default_no_rompe_el_arranque(construir_settings):
+    """`LOG_LEVEL=` en un .env a medio completar no puede tumbar el servicio.
+
+    Es el principio 2 de lidr_3, y el `Literal` lo rompía: sin el
+    BeforeValidator, `""` moría en la validación de dominio."""
+    assert construir_settings(log_level="").log_level == "INFO"
+
+
+@pytest.mark.parametrize("nivel", ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+def test_log_level_acepta_los_cinco_niveles(construir_settings, nivel):
+    assert construir_settings(log_level=nivel).log_level == nivel
+
+
+@pytest.mark.parametrize("nivel", ["info", "trace", "warn", "fatal", "  "])
+def test_log_level_invalido_falla_al_arrancar(construir_settings, nivel):
+    """Un valor presente pero inválido muere acá, no a mitad de una request.
+
+    `info` en minúscula NO se normaliza a `INFO` a propósito: es un `.env` mal
+    puesto, y silenciarlo a un default esconde el error. La normalización solo
+    cubre el vacío."""
+    with pytest.raises(ValidationError) as error:
+        construir_settings(log_level=nivel)
+    assert "log_level" in str(error.value)
+
+
+def test_el_error_de_log_level_lista_los_validos(construir_settings):
+    """El valor de `Literal` es mejor que el de la stdlib justamente por esto:
+    `Unknown level: 'info'` no le dice a nadie qué escribir en el `.env`."""
+    with pytest.raises(ValidationError) as error:
+        construir_settings(log_level="info")
+    mensaje = str(error.value)
+    for nivel in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        assert nivel in mensaje
