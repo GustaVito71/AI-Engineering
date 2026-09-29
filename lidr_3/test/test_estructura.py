@@ -49,6 +49,28 @@ def test_el_pipeline_vive_en_la_raiz_del_monorepo():
     assert "ruff check ." in pipeline.read_text(encoding="utf-8")
 
 
+def test_lidr_3_tiene_su_propio_pipeline():
+    """El README afirma que este proyecto tiene CI automático. Eso solo es
+    verdad si existe un workflow con scope lidr_3: el de lidr_2 no lo cubre y
+    el filtro de paths impide que sus cambios disparen este. Si alguien borra
+    o des-scopea el archivo, el README vuelve a mentir y la suite no lo
+    detectaría — este test es el que lo detecta.
+
+    A diferencia del test de arriba no alcanza con que el archivo exista: se
+    asserta también el `paths` filter y el `working-directory`, que son
+    justamente las dos cosas que pueden quedar mal sin romper nada visible."""
+    pipeline = REPO_ROOT.parent / ".github" / "workflows" / "ci-lidr3.yml"
+    assert pipeline.is_file(), (
+        "Falta .github/workflows/ci-lidr3.yml: el README documenta CI para "
+        "lidr_3, pero sin ese workflow ningún cambio dispara la suite."
+    )
+    contenido = pipeline.read_text(encoding="utf-8")
+    assert '"lidr_3/**"' in contenido, "El filtro de paths debe ser lidr_3/**"
+    assert "working-directory: lidr_3" in contenido
+    assert "pytest -q" in contenido
+    assert "ruff check ." in contenido
+
+
 def test_la_estructura_de_carpetas_es_la_del_ejercicio():
     faltantes = [p for p in SE_ESPERA if not (REPO_ROOT / p).exists()]
     assert not faltantes, "Faltan archivos/carpetas que el ejercicio exige:\n  " + "\n  ".join(

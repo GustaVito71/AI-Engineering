@@ -23,9 +23,11 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from starlette.responses import StreamingResponse
 
+from ..cache import get_cache_client
 from ..config import Settings, get_settings
 from ..schemas.estimation import EstimationRequest, EstimationResponse
 from ..services.llm_service import (
+    CacheClient,
     EstimationResult,
     LLMConfigurationError,
     LLMServiceError,
@@ -44,12 +46,13 @@ router = APIRouter(prefix="/api/v1")
 async def create_estimation(
     body: EstimationRequest,
     settings: Settings = Depends(get_settings),
+    cache: CacheClient | None = Depends(get_cache_client),
 ) -> EstimationResult:
     # Handler async porque la cadena completa es async (cliente async del SDK):
     # el event loop queda libre durante la llamada al proveedor y las requests
     # concurrentes (incluido /health) comparten el mismo loop.
     try:
-        return await generate_estimation(body.transcription, settings)
+        return await generate_estimation(body.transcription, settings, cache)
     except LLMConfigurationError as exc:
         # 503: el problema es local y el mensaje nombra la variable que falta.
         # El operador lo lee en /estimate sin tocar los logs de arranque.
@@ -87,8 +90,9 @@ def _render_evento(evento: StreamMeta | StreamChunk | StreamFinal) -> str:
 async def create_estimation_stream(
     body: EstimationRequest,
     settings: Settings = Depends(get_settings),
+    cache: CacheClient | None = Depends(get_cache_client),
 ) -> StreamingResponse:
-    agen = stream_estimation(body.transcription, settings)
+    agen = stream_estimation(body.transcription, settings, cache)
     # PRE-ARRANQUE: el primer evento se consume acá. La cache lee, el provider
     # abre y el camino primario/fallback se decide ANTES de escribir el
     # status 200; los errores de esa fase bajan como HTTP real (503/502).
