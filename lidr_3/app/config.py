@@ -32,6 +32,11 @@ class LLMConfigurationError(Exception):
     exactamente qué falta. Nombra la variable en el mensaje."""
 
 
+# Piso de `max_output_tokens` en la API de OpenAI (Responses). Anthropic
+# acepta 1, así que este número no restringe al otro proveedor.
+_MIN_MAX_TOKENS = 16
+
+
 class Settings(BaseSettings):
     """Configuración de la aplicación cargada desde variables de entorno
     y el archivo .env.
@@ -61,7 +66,6 @@ class Settings(BaseSettings):
     llm_timeout: float = 30.0
     llm_max_retries: int = 2
     llm_max_tokens: int = 2000
-
     # Proveedor alterno si el primario falla (rate limit, timeout, 5xx).
     # None = fallback desactivado. str (no Literal) para que un valor vacío
     # llegue al validator y se normalice a None (ver llm_model).
@@ -90,6 +94,18 @@ class Settings(BaseSettings):
         self.log_level = self.log_level or "INFO"
         self.openai_model = self.openai_model or "gpt-4o-mini"
         self.anthropic_model = self.anthropic_model or "claude-haiku-4-5"
+        # La API de OpenAI rechaza `max_output_tokens` por debajo de 16 con un
+        # 400 críptico ("integer below minimum value") que no dice qué variable
+        # lo usó mal. Se valida al arrancar, como el resto del dominio, para
+        # que un `.env` mal puesto falle con un mensaje que sí se entiende.
+        # 16 es el piso de OpenAI; Anthropic acepta 1, así que el mismo número
+        # no le hace mal a nadie.
+        if self.llm_max_tokens < _MIN_MAX_TOKENS:
+            raise ValueError(
+                f"LLM_MAX_TOKENS={self.llm_max_tokens} está por debajo del mínimo "
+                f"de {_MIN_MAX_TOKENS} que exige la API de OpenAI "
+                "(max_output_tokens)"
+            )
         # pydantic-settings parsea un `LLM_MODEL=` vacío como "" y no como
         # None: el "no configurado" se detecta con falsy, no con `is None`.
         if not self.llm_model:
