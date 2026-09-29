@@ -107,3 +107,34 @@ def test_resolve_model_alterno_usa_su_default_no_el_override():
     )
     assert settings.resolve_model() == "my-custom-model"
     assert settings.resolve_model("anthropic") == "claude-haiku-4-5"
+
+
+# --- Piso de LLM_MAX_TOKENS -------------------------------------------------
+#
+# La API de OpenAI responde 400 "integer below minimum value" a cualquier
+# max_output_tokens < 16, sin nombrar la variable. Estos tests fijan que un
+# valor así muera al arrancar con un mensaje que sí dice qué corregir.
+
+
+def test_max_tokens_en_el_piso_se_acepta():
+    """16 es el mínimo válido: no se rechaza el borde."""
+    assert make_settings(llm_max_tokens=16).llm_max_tokens == 16
+
+
+@pytest.mark.parametrize("invalido", [1, 0, -5, 15])
+def test_max_tokens_debajo_del_piso_falla_al_arrancar(invalido):
+    with pytest.raises(ValueError, match="LLM_MAX_TOKENS"):
+        make_settings(llm_max_tokens=invalido)
+
+
+def test_max_tokens_invalido_dice_cual_variable_y_cual_minimo():
+    """El mensaje tiene que ser accionable, no un 'value error' a secas.
+
+    El 400 crudo de la API no nombra la variable; si el error de arranque
+    tampoco lo hace, se vuelve a caer en la misma búsqueda.
+    """
+    with pytest.raises(ValueError) as exc:
+        make_settings(llm_max_tokens=1)
+    mensaje = str(exc.value)
+    assert "LLM_MAX_TOKENS=1" in mensaje
+    assert "16" in mensaje
