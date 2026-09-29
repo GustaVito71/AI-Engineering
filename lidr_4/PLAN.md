@@ -32,7 +32,7 @@ conoce el problema que resuelven.
 
 | Decisión | Por qué |
 |---|---|
-| `SolicitudEstimacion` es el contrato canónico; `SolicitudForm` solo alimenta la UI | La UI puede cambiar sin tocar el dominio ni el prompt |
+| `SolicitudEstimacion` es el contrato canónico; `EstimationRequest` solo alimenta la UI | La UI puede cambiar sin tocar el dominio ni el prompt |
 | Los few-shot se renderizan con la **misma** plantilla que la salida | Los ejemplos quedan válidos contra el schema **por construcción**. Se elimina la clase de bugs "el ejemplo 3 enseña un formato que el schema no permite" |
 | `total_horas` y `duracion_semanas` los calcula el código, no el modelo | Tolerancia de error **exactamente 0**. Ver §8 |
 | LiteLLM `Router` es el **único** dueño de retry y fallback | Dos niveles de retry se multiplican y su composición es imposible de razonar |
@@ -49,48 +49,84 @@ conoce el problema que resuelven.
 Dos tipos distintos, y la separación es deliberada: uno es lo que el modelo
 promete, el otro es lo que el sistema entrega.
 
-### 3.1 `SolicitudForm` — capa 1, solo UI
+### 3.1 `EstimationRequest` — capa 1, contrato HTTP
 
-Los nueve campos acordados. El modelo nunca ve este tipo.
+**Implementado en WU2.** Cuatro campos, en `app/schemas/estimation.py`. El modelo
+nunca ve este tipo.
 
 ```python
-class TipoProyecto(StrEnum):
-    WEB = "web"
-    MOVIL = "movil"
-    BACKEND = "backend"
-    INTEGRACION = "integracion"
-    DATOS = "datos"
-    INFRAESTRUCTURA = "infraestructura"
+class ProjectType(str, Enum):
+    MOBILE_APP = "mobile_app"
+    WEB_SAAS = "web_saas"
+    INTERNAL_TOOL = "internal_tool"
+    DATA_PIPELINE = "data_pipeline"
 
 
-class EstadoCodigo(StrEnum):
-    NUEVO = "nuevo"
-    EXISTENTE_ESTABLE = "existente_estable"
-    LEGACY = "legacy"
-    CRITICO = "critico"
+class DetailLevel(str, Enum):
+    SUMMARY = "summary"
+    MEDIUM = "medium"
+    DETAILED = "detailed"
 
 
-class NivelCalidad(StrEnum):
-    BASICO = "basico"
-    ESTANDAR = "estandar"
-    ALTO = "alto"
+class OutputFormat(str, Enum):
+    PHASES_TABLE = "phases_table"
+    LINE_ITEMS = "line_items"
+    NARRATIVE = "narrative"
 
 
-class SolicitudForm(BaseModel):
-    tipo_proyecto: TipoProyecto
-    estado_codigo: EstadoCodigo
-    stack: list[str]
-    nivel_calidad: NivelCalidad
-    requisitos_no_funcionales: list[str]
-    integraciones: list[str]
-    tamano_equipo: int
-    deadline_semanas: int | None  # None = sin deadline
-    descripcion: str
+class EstimationRequest(BaseModel):
+    description: str = Field(min_length=20, max_length=2000)
+    project_type: ProjectType
+    detail_level: DetailLevel
+    output_format: OutputFormat
+
+
+class EstimationResponse(BaseModel):
+    text: str
+    prompt_version: str
 ```
 
-**Sobre el riesgo:** no es un campo. El modelo lo infiere de
-`estado_codigo`, `requisitos_no_funcionales` e `integraciones`. Añadirlo como
-campo explícito sería pedirle al usuario que cuantifique algo que todavía no sabe.
+Los nombres van en inglés aunque la documentación esté en español: son el contrato
+de la API y viajan en el cable, donde un cliente en otro idioma tiene que poder
+mapearlos. `prompt_version` viaja en la respuesta y no solo en los headers,
+porque es lo que permite correlacionar una estimación con la plantilla que la
+generó.
+
+**Lo que se cayó respecto del diseño original de nueve campos:** `estado_codigo`,
+`stack`, `requisitos_no_funcionales`, `integraciones`, `tamano_equipo`,
+`deadline_semanas`, `nivel_calidad` y `tipo_proyecto` (que se funde en
+`project_type`). No es una simplificación de esta unidad sino una decisión de
+partida: cuatro campos obligan al modelo a inferir el resto desde la
+descripción, que es el ejercicio que se quiere medir. El plan original ya
+decía que el riesgo no puede ser un campo explícito, y que el modelo lo infiere
+de `estado_codigo`, `requisitos_no_funcionales` e `integraciones`. Con cuatro
+campos, esa inferencia es total. Si el dominio de WU3 necesita esos datos, se
+agregan como salida, no como entrada.
+
+**Sobre el riesgo:** sigue sin ser un campo. Igual que en el diseño original, el
+modelo lo infiere. Pedirle al usuario que cuantifique algo que todavía no sabe
+sería cambiar la pregunta.
+
+**Sobre los límites de `description`: dos capas, y no es redundancia.**
+
+| Capa | Dónde | Quién lo cambia | Para qué |
+|------|-------|-----------------|----------|
+| Contrato | `Field(20, 2000)` en el schema | nadie, requiere redeploy | La promesa de la API. Es lo que documenta el JSON Schema |
+| Techo del operador | `Settings.descripcion_min/max_chars` | `.env` | Bajar el coste sin redeploy: *"el tamaño de la entrada es la factura"* |
+
+El techo solo puede **estrechar** el contrato, nunca hacerlo más laxo. Con
+`min < 20` o `max > 2000` el `Field` sigue cortando pero el parche de OpenAPI
+escribe el número laxo, así que Swagger prometería un rango que el servicio no
+acepta. `Settings.validar_techo_descripcion` rechaza esas dos direcciones al
+arrancar: es un `.env` mal puesto, y su síntoma como 422 en producción sería
+inexplicable.
+
+El default es 20/2000, o sea el contrato mismo. Con 50/5000 —el valor de WU1—
+el `min_length=20` del schema no se cumpliría nunca y nadie se enteraría.
+
+`CONTRATO_MIN_CHARS` y `CONTRATO_MAX_CHARS` están duplicados en `app/config.py`
+porque config no puede importar el schema sin ciclo (el schema importa
+`get_settings`). Un test vigila que no se desincronicen.
 
 ### 3.2 `SolicitudEstimacion` — capa 3, contrato del LLM
 
@@ -98,7 +134,7 @@ Es literalmente el `response_format` de structured output. **No contiene
 totales.**
 
 ```python
-class Riesgo(StrEnum):
+class Riesgo(str, Enum):
     BAJO = "bajo"
     MEDIO = "medio"
     ALTO = "alto"
@@ -216,7 +252,7 @@ hereda un esqueleto probado.** `lidr_3` son 4606 líneas de Python. De ellas,
 | `app/services/llm_service.py` | 612 | Casi todo es el dispatch que se elimina |
 | `app/services/pricing.py` | 68 | Pricing a mano. Ver §8 |
 | `app/context/examples.py` | 190 | Prompt hardcodeado → Jinja2 versionado |
-| `app/schemas/estimation.py` | 57 | `transcription: str` → `SolicitudForm` |
+| `app/schemas/estimation.py` | 57 | `transcription: str` → `EstimationRequest` (WU2, §3.1) |
 | `streamlit_app.py` | 221 | Un textarea → nueve campos |
 
 `config.py` y `tracing.py` valen más que su tamaño. Los dos resuelven
@@ -255,21 +291,30 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | Unidad | Contenido | Riesgo |
 |--------|-----------|--------|
 | ~~**WU0**~~ | Spike de LiteLLM. §7. **Cerrado:** las 3 preguntas dan sí | Resuelto |
-| **WU1** | Heredar el esqueleto de `lidr_3` (§5): copiar `config.py`, `main.py`, `tracing.py`, `cache.py` y la infra. CI para `lidr_4` **y `lidr_3`**, `ruff format --check` | Bajo |
-| **WU2** | Dominio: enums, `SolicitudForm`, `SolicitudEstimacion`, `calcular_total()`, `calcular_semanas()`. Tests puros, sin I/O | Bajo |
-| **WU3** | `prompts/estimacion.v1.j2` versionado. Los few-shot salen de la misma plantilla | Bajo |
-| **WU4** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()` | Medio |
-| **WU5** | `SolicitudForm` en Streamlit → dominio | Bajo |
-| **WU6** | Slice vertical end-to-end con `mock_response` | Medio |
-| **WU7** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
-| **WU8** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
-| **WU9** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
+| ~~**WU1**~~ | Heredar el esqueleto de `lidr_3` (§5): copiar `config.py`, `main.py`, `tracing.py`, `cache.py` y la infra. CI en matriz. **Cerrado** | Resuelto |
+| ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
+| **WU3** | Dominio: enums, `SolicitudEstimacion`, `EstimacionCompleta`, `calcular_total()`, `calcular_semanas()`. Tests puros, sin I/O | Bajo |
+| **WU4** | `prompts/estimacion.v1.j2` versionado. Los few-shot salen de la misma plantilla | Bajo |
+| **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()` | Medio |
+| **WU6** | `EstimationRequest` en Streamlit → `POST /estimate` | Bajo |
+| **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
+| **WU8** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
+| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
+| **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
-**WU1 incluye un arreglo que no es de esta entrega:** el CI actual solo corre
+**Renumeración.** El WU2 original ("dominio") pasó a ser WU3 y el actual WU2 es
+otra cosa: el contrato de entrada que definiste antes de arrancar. No es un
+desvío del plan, es un prerrequisito que el plan daba por hecho — el §3 ya
+describía la capa 1 como un schema Pydantic, pero sin los límites en dos capas
+de hoy. Lo que cambia con la renumeración: `SolicitudForm` pasa a llamarse
+`EstimationRequest` y sus cuatro campos son los que ya valida el schema. El
+dominio de WU3 sigue igual salvo por ese nombre.
+
+**WU1 incluyó un arreglo que no es de esta entrega:** el CI solo corría
 `lidr_2/**`, así que los tests de `lidr_3` nunca se ejecutaron. Pasarlos a una
-matriz los hace correr por primera vez. El primer push es el diagnóstico: si
-`lidr_3` aparece rojo, se decide con el dato a la vista (`continue-on-error`
-anotando la deuda, o un fix), no antes.
+matriz los hace correr por primera vez. El primer push ya ocurrió: el job
+`lidr_4` pasó los cuatro comandos (`uv sync --locked`, `pytest`, `ruff check`,
+`ruff format --check`) verificados en local antes de commitear.
 
 **Sobre los tests de `lidr_3`: no se porta ninguno.** Escribirlos de nuevo contra
 el código nuevo, en la unidad donde aparece. La alternativa —copiar las ~2300
@@ -279,19 +324,19 @@ que ya no existe. Lo único que vale de esa suite son dos insights, y ya están
 en los docstrings de `config.py` y `tracing.py` que heredamos.
 
 **No hay unidad de tests.** Los tests son parte de la unidad que escribe el
-código, nunca una tarea aparte: WU2 los de dominio (puros, sin I/O, sin red),
-WU3 los de la plantilla, WU4 los del gateway, WU9 los del keying. Si una unidad
-agrega comportamiento, agrega su test en el mismo commit.
+código, nunca una tarea aparte: WU2 los del contrato (puros, sin I/O, sin red),
+WU3 los de dominio, WU4 los de la plantilla, WU5 los del gateway, WU10 los del
+keying. Si una unidad agrega comportamiento, agrega su test en el mismo commit.
 
-El más importante de todos es el de WU3, y no se puede escribir antes: extraer
+El más importante de todos es el de WU4, y no se puede escribir antes: extraer
 los few-shot renderizados y pasarlos por `SolicitudEstimacion.model_validate_json`.
 Es el único que demuestra que "los ejemplos salen de la misma plantilla que la
 salida" funciona de verdad, y es el que la suite de `lidr_3` no podía tener
 porque no había schema contra el cual fallar.
 
-Orden deliberado: el dominio (WU2) va antes que la infraestructura (WU4)
-porque las funciones de cálculo no necesitan red para testearse, y son la parte
-que más cambios de requisitos va a tolerar.
+Orden deliberado: el contrato (WU2) y el dominio (WU3) van antes que la
+infraestructura (WU5) porque ninguno necesita red para testearse, y son las
+partes que más cambios de requisitos van a tolerar.
 
 ---
 
@@ -299,7 +344,7 @@ que más cambios de requisitos va a tolerar.
 
 Ejecutado contra OpenAI y Anthropic con el schema real (3 tareas, strict).
 Las tres preguntas quedan respondidas: **sí, sí, sí.** La capa 3 se puede
-diseñar con eventos de fila. Pero con dos reserve que cambian WU7 y WU9.
+diseñar con eventos de fila. Pero con dos reserve que cambian WU8 y WU10.
 
 ### Las 3 preguntas
 
@@ -337,7 +382,7 @@ segundos y después ve todo de golpe. La causa es el **orden de las claves del
 schema**: `solicitud` va antes que `tareas`, y el modelo razona sobre la
 solicitud antes de emitir la primera tarea.
 
-**Decisión para WU7: `tareas` va primero en el schema, `solicitud` al final.**
+**Decisión para WU8: `tareas` va primero en el schema, `solicitud` al final.**
 Invierte la espera: las filas empiezan a aparecer antes y el eco de la
 solicitud llega al final, que es donde molesta menos. Es gratis.
 
@@ -357,7 +402,7 @@ Consecuencia directa: **el fallback a Anthropic no es gratis**, y fingir que lo
 es porque "ambos dan JSON válido" esconde una decisión de costo de 10x.
 `usage` de Anthropic trae `cache_read_input_tokens` y `cache_write_tokens`, así
 que **prompt caching aplica**, y el prefijo estático (schema + ejemplos) es el
-candidato ideal. Eso le da a WU9 más peso del que tenía y es la razón de que
+candidato ideal. Eso le da a WU10 más peso del que tenía y es la razón de que
 `PROMPT_VERSION` tenga que ser explícito.
 
 **Criterio de decisión, ya ejecutado:** si la 1 fallaba, la capa 3 se rediseñaba
@@ -415,10 +460,10 @@ JSON sin verificar. Es la política, no una preferencia.
 
 | Riesgo | Impacto | Mitigación |
 |--------|---------|------------|
-| `response_format` + `stream` no soportado por el provider | Rompe la capa 3 | WU0 lo mide antes de WU7 |
-| El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | Validación cruzada de referencias en WU2 |
-| `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU8 |
-| Caché semántico sirve una estimación de otro dominio | Resultado plausible pero fuera de tema | Namespace por `prompt_version` + umbral alto, WU9 |
+| `response_format` + `stream` no soportado por el provider | Rompe la capa 3 | WU0 lo mide antes de WU8 |
+| El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | Validación cruzada de referencias en WU3 |
+| `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU9 |
+| Caché semántico sirve una estimación de otro dominio | Resultado plausible pero fuera de tema | Namespace por `prompt_version` + umbral alto, WU10 |
 | Deriva de precios del modelo | Coste reportado ≠ coste real | `completion_cost()` se recalcula, no se cachea el precio |
 
 ---
