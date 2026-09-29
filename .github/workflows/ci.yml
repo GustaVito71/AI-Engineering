@@ -1,21 +1,35 @@
-name: CI lidr_2
+name: CI
 
 on:
   push:
     paths:
       - "lidr_2/**"
+      - "lidr_3/**"
+      - "lidr_4/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "lidr_2/**"
+      - "lidr_3/**"
+      - "lidr_4/**"
 
-defaults:
-  run:
-    working-directory: lidr_2
+# Un job por entrega, vía matriz. Antes esto era un único job con
+# `working-directory: lidr_2`, y la consecuencia fue que los tests de lidr_3
+# nunca corrieron en CI pese a existir: el workflow no los disparaba.
+#
+# Los tests mockean el LLM, así que la suite corre sin API keys.
 
 jobs:
   test:
+    name: ${{ matrix.project }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [lidr_2, lidr_3, lidr_4]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
     steps:
       - uses: actions/checkout@v4
 
@@ -28,13 +42,14 @@ jobs:
       - name: Sincronizar dependencias
         run: uv sync --locked --all-groups
 
-      # Los tests mockean el LLM: esta suite corre sin API keys.
-      # GitHub Actions solo descubre workflows en el .github/workflows de la
-      # raíz del repo (aunque recorra sus subcarpetas); por eso este archivo
-      # vive aquí y no en lidr_2/.github/. El filtro de paths lo aísla para
-      # que solo corra cuando cambia algo de lidr_2.
       - name: Ejecutar tests
         run: uv run pytest -q
 
-      - name: Lint (ruff)
+      - name: Lint (ruff check)
         run: uv run ruff check .
+
+      # `ruff check` dice si hay errores. `ruff format --check` dice si el
+      # código tiene la forma que el formateador produciría. Son dos fallas
+      # distintas y la segunda es la que se cuela en los pull requests.
+      - name: Formato (ruff format)
+        run: uv run ruff format --check .
