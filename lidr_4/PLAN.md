@@ -144,14 +144,14 @@ class Tarea(BaseModel):
     id: str  # "T1", "T2"... para referencias entre tareas
     titulo: str
     descripcion: str
-    horas: int  # > 0
-    depende_de: list[str]  # ids de tareas previas
+    horas: int = Field(gt=0)
+    depende_de: list[str] = Field(default_factory=list)
     riesgo: Riesgo
 
 
 class RolEquipo(BaseModel):
     rol: str
-    cantidad: int
+    cantidad: int = Field(gt=0)
     foco: str
 
 
@@ -167,7 +167,29 @@ class SolicitudEstimacion(BaseModel):
     supuestos: list[Supuesto]
     riesgos: list[str]
     advertencias: list[str]
+
+    @property
+    def tamano_equipo(self) -> int: ...
 ```
+
+**`horas` y `cantidad` llevan `gt=0`, y no es cosmético.** Con `horas: int` pelado, el
+modelo puede emitir cero o negativo, y `sum()` lo acepta en silencio. La validación
+va en el campo para que el error muera en el parseo, que es donde el modelo todavía
+se puede re-preguntar; más adelante, en el cálculo, ya no hay a quién preguntar.
+
+**`tamano_equipo` es una property y no un campo.** Es dato derivado: si fuera campo,
+el modelo podría emitir `tamano_equipo: 2` con un `equipo` que suma 4, y el cálculo
+usaría el error sin que nadie lo viera. La regla de la capa es que **los datos
+derivados se calculan en código**, y por eso `total_horas`, `duracion_semanas` y
+`tamano_equipo` no son campos de ningún modelo.
+
+**El plan original no validaba las referencias de `depende_de`, y sí tiene que
+hacerse.** El modelo inventa IDs, y Pydantic no lo detecta: `depende_de` es
+`list[str]` y el string es válido. Sin un chequeo cruzado, la estimación se muestra
+completa con un grafo que no se puede recorrer. `SolicitudEstimacion` valida tres
+cosas: que no haya IDs duplicados, que toda dependencia apunte a una tarea
+existente, y que no haya ciclos. Los tres mueren en el parseo, antes de que
+`calcular_semanas` intente usar el grafo.
 
 ### 3.3 `EstimacionCompleta` — lo que sale del sistema
 
@@ -180,18 +202,101 @@ class EstimacionCompleta(SolicitudEstimacion):
 Se valida con un modelo base, y los totales se calculan **después**, en código:
 
 ```python
+HORAS_SEMANALES = 40
+FRACCION_ENFOQUE = 0.8  # el 20% restante es review, meetings y soporte
+
+
 def calcular_total(estimacion: SolicitudEstimacion) -> int:
     return sum(t.horas for t in estimacion.tareas)
 
 
 def calcular_semanas(estimacion: SolicitudEstimacion) -> int:
-    # capacidad = horas del equipo ajustadas por enfoque (≈0.8, no todos programan a la vez)
-    return max(1, ceil(total_horas / (tamano_equipo * 40 * 0.8)))
+    capacidad = estimacion.tamano_equipo * HORAS_SEMANALES * FRACCION_ENFOQUE
+    return max(1, ceil(calcular_total(estimacion) / capacidad))
 ```
+
+**Un `tareas` vacío da 0, y no es un error.** Puede que el modelo responda que
+un trabajo tan chico no amerita descomponerse, y el sistema tiene que poder decirlo
+en vez de inventar un error de formato. El `max(1, ...)` cubre el caso de menos
+de una semana: una feature de dos días no dura 0.06 semanas, y un
+`duracion_semanas: 0` sería peor que inútil porque la UI no sabe pintar un cero.
 
 El `0.8` documenta su propio supuesto: el equipo no dedica el 100% del tiempo a
 esta estimación. Es una decisión de negocio, no del modelo, y por eso vive en
-código donde se puede discutir y testear.
+código donde se puede discutir y testear. **Un equipo vacío se rechaza** con
+`ValueError` en vez de devolver 1: la alternativa sería un número sin sentido
+computado, que es la forma exacta de una estimación que se ve válida en pantalla
+y no lo está.
+
+**`completar()` construye el `EstimacionCompleta` con `model_validate` sobre un
+dict**, no copiando los campos a mano. Un `model_copy(update=...)` perdería en
+silencio cualquier campo que mañana se agregue a `SolicitudEstimacion`; el
+`model_validate` lo delata al primer test que se rompa.
+
+### 3.4 Quién calcula los totales, y qué pasa si el modelo discrepa
+
+`completar()` la invoca el **gateway (WU5)**, en el momento en que termina el
+parseo del JSON. Ni el router ni la UI calculan nada:
+
+```
+LLM      → emite Tarea(horas)             el modelo no sabe que hay una suma
+gateway  → SolicitudEstimacion.model_validate(json)
+dominio  → completar()  ──────────────►  total_horas, duracion_semanas
+gateway  → EstimacionCompleta  ───────►  WU8 emite el evento `totals`
+```
+
+**Por qué el gateway y no el router.** El router de WU6 solo traduce errores
+HTTP. Si la suma viviera ahí, cada endpoint nuevo tendría que acordarse de
+llamarla, y el primero que se olvide devuelve una respuesta sin totales que
+parece válida.
+
+**Por qué en el dominio y no en el gateway.** Porque es lo único que se puede
+testear sin red: `completar()` es una función pura, entra un dict y sale un
+modelo. Si la suma viviera en `llm_service.py`, testearla exigiría mockear el
+cliente de LLM entero, y los tests pasarían a depender de una forma que cambia
+en WU5.
+
+**Tarea para WU5 + WU9: registrar la discrepancia, no corregirla.** El gateway
+compara los totales que emitió el modelo contra los que calculó el código, y
+si difieren lo loguea. Tres reglas, y las tres importan:
+
+- **No se corrige.** El número que se devuelve es el del código.
+- **No se falla.** Una estimación no se cae por un total que el modelo
+ calculó mal: el resto de la estimación sigue siendo válida.
+- **No se re-pregunta.** `session_4_live` usa Instructor, que re-pide al modelo
+  con el `ValueError` hasta que acepte. Eso hace que la aritmética la haga el
+  modelo con ayuda, y su aritmética es justo lo que no queremos. Acá la suma la
+  hace el código, sin depender de que el modelo coopere.
+
+La comparación es un guardrail de salida, o sea **WU9**: en WU3 no hay gateway
+y meter logging en el dominio mezclaría la lógica pura con la infraestructura.
+El log va en `structlog` con `total_horas_modelo`, `total_horas_calculado` y la
+diferencia, para que se pueda graficar.
+
+**Un `total_horas` que venga en el JSON se ignora, y eso es correcto.** Hay un
+test que lo fija. Lo que falta es que ignorarlo sea *silencioso*; con esta
+tarea deja de serlo: si el modelo lo emite, queda registrado.
+
+**Por qué el modelo no puede emitir los totales.** La tabla de la referencia
+oficial (`session_4_live`) hace lo contrario: `total_cost_eur` y
+`total_duration_weeks` son campos que el modelo llena, y un `model_validator`
+comprueba que las fases sumen. Es defendible, y su docstring explica algo que
+§4 ya aprovecha: el orden de los campos importa por la generación
+autoregresiva. Si el total va primero, el modelo elige un número redondo y
+después backfitea las fases, y lo hace mal — sobre todo con `gpt-4o-mini`, que
+es nuestro `primary_model`.
+
+No lo seguimos por dos razones. Una: nuestro WU0 midió que `response_format=
+json_schema` funciona, y eso no trae re-prePrompt; el validador de la referencia
+solo funciona porque está sobre Instructor. La validación por reintento sin
+Instructor es solo un `ValidationError` que tumba la request. Dos: la
+inconsistencia de esa forma es posible por construcción, y con `gpt-4o-mini` es
+probable. Un `total_horas` que el sistema "arregla" en silencio es el peor de
+los dos mundos: la respuesta se ve válida y el número no salió del modelo.
+
+De paso, esa referencia tiene un hueco que conviene no copiar: valida que las
+fases sumen el **coste**, pero `total_duration_weeks` no se valida contra nada.
+En su fixture los números cuadran por casualidad (1+6+1=8).
 
 ---
 
@@ -293,13 +398,13 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU0**~~ | Spike de LiteLLM. §7. **Cerrado:** las 3 preguntas dan sí | Resuelto |
 | ~~**WU1**~~ | Heredar el esqueleto de `lidr_3` (§5): copiar `config.py`, `main.py`, `tracing.py`, `cache.py` y la infra. CI en matriz. **Cerrado** | Resuelto |
 | ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
-| **WU3** | Dominio: enums, `SolicitudEstimacion`, `EstimacionCompleta`, `calcular_total()`, `calcular_semanas()`. Tests puros, sin I/O | Bajo |
+| ~~**WU3**~~ | Dominio: enums, `SolicitudEstimacion`, `EstimacionCompleta`, `calcular_total()`, `calcular_semanas()`. Tests puros, sin I/O. **Cerrado** | Resuelto |
 | **WU4** | `prompts/estimacion.v1.j2` versionado. Los few-shot salen de la misma plantilla | Bajo |
-| **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()` | Medio |
+| **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()`. Invoca `completar()` en el punto de parseo (§3.4) | Medio |
 | **WU6** | `EstimationRequest` en Streamlit → `POST /estimate` | Bajo |
 | **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
 | **WU8** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
-| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
+| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento. **Loggear la discrepancia de totales sin corregirla (§3.4)** | Medio |
 | **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
 **Renumeración.** El WU2 original ("dominio") pasó a ser WU3 y el actual WU2 es
