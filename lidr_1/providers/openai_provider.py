@@ -7,7 +7,11 @@ from openai import OpenAI, AuthenticationError, RateLimitError, APIStatusError
 
 # Nuestra interfaz común (base) y nuestros tipos de error normalizados
 from .base import Message, LLMResponse, BaseProvider
-from .errors import LLMError, RateLimitError as AppRateLimitError, AuthenticationError as AppAuthError
+from .errors import (
+    LLMError,
+    RateLimitError as AppRateLimitError,
+    AuthenticationError as AppAuthError,
+)
 
 
 class OpenAIProvider(BaseProvider):
@@ -29,21 +33,42 @@ class OpenAIProvider(BaseProvider):
     def get_available_models(self) -> list[str]:
         """Consulta en vivo el endpoint /models de OpenAI."""
         try:
-            ids = [m.id for m in self.client.models.list()]  # petición HTTP real al servidor
+            ids = [
+                m.id for m in self.client.models.list()
+            ]  # petición HTTP real al servidor
         except APIStatusError as e:
             # Cualquier fallo de la API se envuelve en nuestro error normalizado
             raise LLMError(self.name, str(e), getattr(e, "status_code", None)) from e
         # La API devuelve todo: embeddings, TTS, imágenes, etc.
         # Se filtran solo los modelos de chat/texto razonado.
-        excluded = ("image", "audio", "realtime", "transcribe", "tts",
-                    "whisper", "sora", "embedding", "moderation", "search",
-                    "codex", "davinci", "babbage", "instruct")
+        excluded = (
+            "image",
+            "audio",
+            "realtime",
+            "transcribe",
+            "tts",
+            "whisper",
+            "sora",
+            "embedding",
+            "moderation",
+            "search",
+            "codex",
+            "davinci",
+            "babbage",
+            "instruct",
+        )
         return sorted(
-            m for m in ids
+            m
+            for m in ids
             if not any(flag in m for flag in excluded)  # se queda si no es excluido
         )
 
-    def chat(self, messages: list[Message], model: str | None = None, temperature: float = 0.7) -> LLMResponse:
+    def chat(
+        self,
+        messages: list[Message],
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         """Estructura típica de una llamada a OpenAI usando la RESPONSES API (SDK).
 
         La Responses API es la recomendada por OpenAI para proyectos nuevos.
@@ -79,16 +104,26 @@ class OpenAIProvider(BaseProvider):
                 content=response.output_text or "",
                 model=response.model,
                 usage={  # la Responses API ya usa input_tokens/output_tokens directos
-                    "input_tokens": response.usage.input_tokens if response.usage else None,
-                    "output_tokens": response.usage.output_tokens if response.usage else None,
+                    "input_tokens": response.usage.input_tokens
+                    if response.usage
+                    else None,
+                    "output_tokens": response.usage.output_tokens
+                    if response.usage
+                    else None,
                 },
             )
         # Mapeamos los errores específicos del SDK a nuestros errores normalizados
         # para que quien llama al adaptador no dependa del SDK concreto.
         except AuthenticationError as e:
-            raise AppAuthError(self.name, "API key inválida o sin permisos", getattr(e, "status_code", 401)) from e
+            raise AppAuthError(
+                self.name,
+                "API key inválida o sin permisos",
+                getattr(e, "status_code", 401),
+            ) from e
         except RateLimitError as e:
-            raise AppRateLimitError(self.name, "Rate limit superado", getattr(e, "status_code", 429)) from e
+            raise AppRateLimitError(
+                self.name, "Rate limit superado", getattr(e, "status_code", 429)
+            ) from e
         except APIStatusError as e:
             # Cualquier otro fallo HTTP (404 modelo inexistente, 500 del servidor...)
             raise LLMError(self.name, str(e), getattr(e, "status_code", None)) from e

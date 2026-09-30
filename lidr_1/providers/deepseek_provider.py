@@ -10,7 +10,11 @@ import os
 from openai import OpenAI, AuthenticationError, RateLimitError, APIStatusError
 
 from .base import Message, LLMResponse, BaseProvider
-from .errors import LLMError, RateLimitError as AppRateLimitError, AuthenticationError as AppAuthError
+from .errors import (
+    LLMError,
+    RateLimitError as AppRateLimitError,
+    AuthenticationError as AppAuthError,
+)
 
 
 class DeepSeekProvider(BaseProvider):
@@ -37,7 +41,12 @@ class DeepSeekProvider(BaseProvider):
         except APIStatusError as e:
             raise LLMError(self.name, str(e), getattr(e, "status_code", None)) from e
 
-    def chat(self, messages: list[Message], model: str | None = None, temperature: float = 0.7) -> LLMResponse:
+    def chat(
+        self,
+        messages: list[Message],
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         """Estructura de llamada: IDÉNTICA a OpenAI (sirve este mismo SDK)."""
         model = model or self.model
         try:
@@ -52,14 +61,24 @@ class DeepSeekProvider(BaseProvider):
                 content=response.choices[0].message.content or "",
                 model=response.model,
                 usage={  # mismo esquema de tokens que OpenAI; normalizamos a input/output
-                    "input_tokens": response.usage.prompt_tokens if response.usage else None,
-                    "output_tokens": response.usage.completion_tokens if response.usage else None,
+                    "input_tokens": response.usage.prompt_tokens
+                    if response.usage
+                    else None,
+                    "output_tokens": response.usage.completion_tokens
+                    if response.usage
+                    else None,
                 },
             )
         # Mapeamos los errores del SDK a nuestros errores normalizados
         except AuthenticationError as e:
-            raise AppAuthError(self.name, "API key inválida o sin permisos", getattr(e, "status_code", 401)) from e
+            raise AppAuthError(
+                self.name,
+                "API key inválida o sin permisos",
+                getattr(e, "status_code", 401),
+            ) from e
         except RateLimitError as e:
-            raise AppRateLimitError(self.name, "Rate limit superado", getattr(e, "status_code", 429)) from e
+            raise AppRateLimitError(
+                self.name, "Rate limit superado", getattr(e, "status_code", 429)
+            ) from e
         except APIStatusError as e:
             raise LLMError(self.name, str(e), getattr(e, "status_code", None)) from e

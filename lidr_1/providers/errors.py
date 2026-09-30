@@ -12,25 +12,32 @@ class LLMError(Exception):
     """
 
     def __init__(self, provider: str, message: str, status_code: int | None = None):
-        self.provider = provider      # qué proveedor falló (openai, gemini...)
-        self.message = message        # descripción del fallo
+        self.provider = provider  # qué proveedor falló (openai, gemini...)
+        self.message = message  # descripción del fallo
         self.status_code = status_code  # código HTTP si la API lo devolvió
         # Mensaje legible: "[openai] API key inválida (HTTP 401)"
-        super().__init__(f"[{provider}] {message} (HTTP {status_code})" if status_code else f"[{provider}] {message}")
+        super().__init__(
+            f"[{provider}] {message} (HTTP {status_code})"
+            if status_code
+            else f"[{provider}] {message}"
+        )
 
 
 class RetryableError(LLMError):
     """Marca los errores que SÍ merecen reintentarse (problemas temporales)."""
+
     pass
 
 
 class RateLimitError(RetryableError):
     """El proveedor nos pide esperar: nos limitaron por cuota de peticiones."""
+
     pass
 
 
 class AuthenticationError(LLMError):
     """Key inválida/prohibida: retintentar no sirve, hay que arreglar la credencial."""
+
     pass
 
 
@@ -61,8 +68,13 @@ def retry_with_backoff(
                     # Error temporal: esperamos y volvemos a intentar
                     attempt += 1
                     if attempt > max_retries:
-                        raise LLMError(e.provider, f"Rate limit persistente tras {max_retries} reintentos") from e
-                    print(f"  -> Rate limit, reintento {attempt}/{max_retries} en {delay:.1f}s")
+                        raise LLMError(
+                            e.provider,
+                            f"Rate limit persistente tras {max_retries} reintentos",
+                        ) from e
+                    print(
+                        f"  -> Rate limit, reintento {attempt}/{max_retries} en {delay:.1f}s"
+                    )
                     time.sleep(delay)
                     delay *= backoff_factor  # cada intento espera más (backoff)
                 except (AuthenticationError, LLMError) as e:

@@ -18,6 +18,7 @@ class ProviderFactory:
     Así el código cliente no necesita saber qué SDK usar:
     solo pide un proveedor por nombre y recibe la instancia.
     """
+
     # Registro de proveedores: nombre -> clase del adaptador.
     # Crecer con más proveedores NO implica tocar este diccionario.
     _registry: dict[str, type[BaseProvider]] = {}
@@ -38,8 +39,12 @@ class ProviderFactory:
         if name not in cls._registry:
             # Fallo claro y con pista, mejor que un KeyError críptico
             available = ", ".join(sorted(cls._registry))
-            raise ValueError(f"Proveedor desconocido '{name}'. Disponibles: {available}")
-        return cls._registry[name](**kwargs)  # llama a la clase -> construye el adaptador
+            raise ValueError(
+                f"Proveedor desconocido '{name}'. Disponibles: {available}"
+            )
+        return cls._registry[name](
+            **kwargs
+        )  # llama a la clase -> construye el adaptador
 
     @classmethod
     def list_available(cls) -> list[str]:

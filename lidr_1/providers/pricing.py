@@ -16,8 +16,18 @@ _price_db = LLMPrice()
 _snapshot_version = importlib.metadata.version("llmprice-kit")
 
 _MESES = [
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "septiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
 ]
 
 
@@ -43,12 +53,14 @@ def estimate_cost(model: str, usage: dict | None) -> tuple[float | None, str]:
     try:
         info = _price_db.get(model)  # excepción si el modelo no está en la base
     except KeyError:
-        return None, f"LLMPrice no tiene datos para '{model}' en el snapshot {_snapshot_label()}"
+        return (
+            None,
+            f"LLMPrice no tiene datos para '{model}' en el snapshot {_snapshot_label()}",
+        )
 
     input_tokens = usage.get("input_tokens") or 0
     output_tokens = usage.get("output_tokens") or 0
     cost = (
-        input_tokens * info.input_cost_per_1m
-        + output_tokens * info.output_cost_per_1m
+        input_tokens * info.input_cost_per_1m + output_tokens * info.output_cost_per_1m
     ) / 1_000_000
     return cost, f"LLMPrice (snapshot {_snapshot_label()})"
