@@ -1,0 +1,24 @@
+# Secretos: nunca se commitean.
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# Entornos virtuales
+.venv/
+
+# Testing / linting caches
+.pytest_cache/
+.ruff_cache/
+
+# Nota: uv.lock se commitea (ver CAG: elección de app, no de librería).
+# Local Pi runtime state
+.atl/
+
+# Tooling local
+.odd/
+.playwright-mcp/

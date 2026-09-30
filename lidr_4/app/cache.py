@@ -1,8 +1,8 @@
 """Cache Redis (infraestructura, agnóstico del dominio).
 
-Este módulo NO conoce EstimacionCompleta ni la respuesta del LLM: guarda y
-devuelve dicts JSON-serializables. Quien usa el cache (el gateway de WU5)
-traduce entre dict y dominio. Así el cache queda reutilizable para cualquier
+Este módulo NO conoce la respuesta del LLM: guarda y devuelve dicts
+JSON-serializables. Quien usa el cache (el gateway de WU5) traduce entre el dict
+y lo que necesite el dominio. Así el cache queda reutilizable para cualquier
 dato y el dominio no se acopla a Redis.
 
 Fail soft por diseño: un fallo de Redis (caído, timeout, entrada corrupta)
