@@ -21,7 +21,12 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
-    "ruff>=0.6",
+    # El formateador es un pin estricto: `ruff format` no garantiza salida
+    # byte-estable entre minors, y el reflow depende de la versión que lo
+    # genera. Un `>=0.6` dejaba la puerta abierta a que una re-resolución
+    # (uv lock --upgrade) cambie el formato en silencio. Bump deliberado +
+    # reflow propio en su commit.
+    "ruff==0.16.8",
 ]
 
 [tool.uv]
