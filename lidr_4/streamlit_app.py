@@ -1,21 +1,23 @@
-"""Streamlit frontend for the Estimador CAG service (lidr_3 deliverable).
+"""Streamlit frontend for the Estimador service (lidr_4 deliverable).
 
-The UI is a thin, single-turn client: paste a meeting transcription, get a
-live streaming estimate. It never touches a provider API key; the backend
-reads its own keys from Settings (.env). The frontend only needs the base URL
-of the running API (`ESTIMATOR_API_BASE_URL`, default http://localhost:8001).
+The UI is a thin, single-request client: fill a typed form, get an estimate
+back as free text. It never touches a provider API key; the backend reads its
+own keys from Settings (.env). The frontend only needs the base URL of the
+running API (`ESTIMATOR_API_BASE_URL`, default http://localhost:8001).
 
-Why single-turn: the model is stateless per request (system prompt CAG + the
-transcription as data). There is no conversation to remember, so keeping a
-multi-turn history on screen would imply continuity that does not exist. Each
-new transcription replaces the previous turn on purpose.
+Why single-shot: there is no conversation to remember. Each submission is an
+independent `POST /api/v1/estimate`, so keeping a multi-turn history on screen
+would imply continuity that does not exist.
 
-Why the streaming loop is a pure generator: `_parsear_sse` and
-`_stream_deltas` are testable without a running Streamlit runtime, and the
-contract test in test/test_frontend.py feeds them the EXACT lines the router
-produces (`_evento_sse`) plus a mocked HTTP transport. The Streamlit calls
-live only inside `main()`, which Streamlit runs as __main__; importing the
-module from pytest defines the pure functions and does nothing else.
+Why the form and not a chat: the request is a typed contract
+(`description` + three enums), not prose. A form makes that contract visible
+to the user and lets the browser validate lengths before spending a token.
+
+Why the HTTP call is a pure function: `_estimar` is testable without a running
+Streamlit runtime. The contract test in test/test_frontend.py feeds it a mocked
+HTTP transport. The Streamlit calls live only inside `main()`, which Streamlit
+runs as __main__; importing the module from pytest defines the pure functions
+and does nothing else.
 """
 
 from __future__ import annotations
@@ -24,41 +26,40 @@ import os
 
 import httpx
 import streamlit as st
-import json
-
-from collections.abc import Iterable, Iterator
-
-
-
 
 DEFAULT_API_BASE = os.environ.get("ESTIMATOR_API_BASE_URL", "http://localhost:8001")
 
+# The 422 errors raised by `EstimationRequest` before the prompt even runs.
+DESCRIPTION_MIN_CHARS = 20
+DESCRIPTION_MAX_CHARS = 2000
+
+PROJECT_TYPES = {
+    "mobile_app": "App móvil",
+    "web_saas": "SaaS web",
+    "internal_tool": "Herramienta interna",
+    "data_pipeline": "Pipeline de datos",
+}
+
+DETAIL_LEVELS = {
+    "summary": "Resumen",
+    "medium": "Medio",
+    "detailed": "Detallado",
+}
+
+OUTPUT_FORMATS = {
+    "phases_table": "Tabla de fases",
+    "line_items": "Partidas detalladas",
+    "narrative": "Narrativa",
+}
+
 
 class _ApiError(Exception):
-    """The backend answered with a non-200 status or an SSE `error` event."""
+    """The backend answered with a non-200 status."""
 
     def __init__(self, status: int, detail: object) -> None:
         super().__init__(str(detail))
         self.status = status
         self.detail = detail
-
-
-def _parsear_sse(lineas: Iterable[str]) -> Iterator[tuple[str, dict]]:
-    """Parse `event:`/`data:` lines (the format `_evento_sse` emits) into
-    (tipo, datos) pairs. Blank lines are separators and are ignored; the
-    `event` line always precedes its `data` line, so one slot is enough."""
-    evento: str | None = None
-    for linea in lineas:
-        if not linea:
-            continue
-        if linea.startswith("event: "):
-            evento = linea[len("event: ") :]
-        elif linea.startswith("data: "):
-            if evento is None:
-                raise _ApiError(502, "SSE malformado: data sin event previo")
-            datos = json.loads(linea[len("data: ") :])
-            yield evento, datos
-            evento = None
 
 
 def _detail_texto(detail: object) -> str:
@@ -68,77 +69,47 @@ def _detail_texto(detail: object) -> str:
     return str(detail)
 
 
-def _stream_deltas(
+def _estimar(
     api_base: str,
-    transcription: str,
-    captura: dict,
+    payload: dict,
     client: httpx.Client | None = None,
-) -> Iterator[str]:
-    """Consume `POST /api/v1/estimate/stream` and yield each delta as text.
+) -> tuple[str, str]:
+    """POST the typed payload to `/api/v1/estimate` and return `(text, prompt_version)`.
 
-    Metadata captured for the final summary lives in the mutable `captura`
-    dict (closed over by the caller): `meta` (provider/route, only on a real
-    miss) and `final` (the complete EstimationResult). A failure before the
-    first byte raises `_ApiError` with the real HTTP status; a mid-stream
-    failure arrives as an SSE `error` event and is raised the same way after
-    whatever deltas were already shown. `client` is injected by tests
-    (httpx.MockTransport); the UI always lets the function create its own."""
+    The response contract is `{text: str, prompt_version: str}` — free text, no
+    structure to parse, so nothing here walks the body beyond those two keys.
+    A non-200 raises `_ApiError` carrying the real HTTP status and the parsed
+    `detail` (FastAPI's 422 arrives as a list of `{msg, ...}` items, which
+    `_detail_texto` flattens). `client` is injected by tests
+    (httpx.MockTransport); the UI always lets the function create its own.
+    """
     propio = client is None
     cliente = client if client is not None else httpx.Client()
     try:
-        with cliente.stream(
-            "POST",
-            f"{api_base}/api/v1/estimate/stream",
-            json={"transcription": transcription},
-            timeout=None,  # SSE: the backend stream can pause between deltas.
-        ) as respuesta:
-            if respuesta.status_code != 200:
-                # En modo stream el body NO se lee solo: acceder a .json()/.text
-                # sin read() lanza httpx.ResponseNotRead (un RuntimeError que
-                # ni siquiera hereda de HTTPError; lo destapó el repaso manual,
-                # no MockTransport, porque el mock entrega el body ya leído).
-                cuerpo = respuesta.read()
-                try:
-                    detail = respuesta.json().get("detail", cuerpo.decode("utf-8", "replace"))
-                except ValueError:
-                    detail = cuerpo.decode("utf-8", "replace")
-                raise _ApiError(respuesta.status_code, detail)
-            for tipo, datos in _parsear_sse(respuesta.iter_lines()):
-                if tipo == "delta":
-                    yield datos["texto"]
-                elif tipo == "meta":
-                    captura["meta"] = datos
-                elif tipo == "estimation":
-                    captura["final"] = datos
-                elif tipo == "error":
-                    raise _ApiError(502, datos.get("detail", "No se pudo completar la estimación."))
+        respuesta = cliente.post(
+            f"{api_base}/api/v1/estimate",
+            json=payload,
+            timeout=None,
+        )
+        if respuesta.status_code != 200:
+            try:
+                detail = respuesta.json().get("detail", respuesta.text)
+            except ValueError:
+                detail = respuesta.text
+            raise _ApiError(respuesta.status_code, detail)
+        cuerpo = respuesta.json()
+        return cuerpo["text"], cuerpo["prompt_version"]
     finally:
         if propio:
             cliente.close()
 
 
-def _resumen(captura: dict) -> str:
-    """One caption line with the tracing metadata the backend exposes."""
-    piezas: list[str] = []
-    meta = captura.get("meta")
-    if meta:
-        piezas.append(f"Camino: {meta.get('camino', '—')}")
-        piezas.append(f"Proveedor: {meta.get('proveedor', '—')}")
-    final = captura.get("final")
-    if final:
-        piezas.append(f"Modelo: {final.get('model', '—')}")
-        costo = final.get("cost_usd")
-        piezas.append(f"Costo: ${costo:.6f}" if costo is not None else "Costo: —")
-        piezas.append("Truncado: sí" if final.get("truncated") else "Truncado: no")
-    return " · ".join(piezas) if piezas else ""
-
-
 def main() -> None:
-    st.set_page_config(page_title="Estimador CAG", page_icon="📋", layout="centered")
+    st.set_page_config(page_title="Estimador", page_icon="📋", layout="centered")
 
-    st.sidebar.title("Estimador CAG")
+    st.sidebar.title("Estimador")
     st.sidebar.caption(
-        "Cliente del servicio `estimador-cag`. Las API keys viven "
+        "Cliente del servicio `estimador`. Las API keys viven "
         "en el backend (.env); acá no se piden."
     )
     api_base = st.sidebar.text_input("URL de la API", value=DEFAULT_API_BASE)
@@ -159,66 +130,82 @@ def main() -> None:
                 f"No se pudo conectar a {api_base}. Levantá la API con:\n\n`uv run python -m app`"
             )
 
-    st.title("📋 Estimá la duración del proyecto")
+    st.title("📋 Estimá un proyecto")
     st.caption(
-        "Pegá la transcripción de la reunión; cada nueva transcripción "
-        "reemplaza la anterior (turno único)."
+        f"Describí el proyecto entre {DESCRIPTION_MIN_CHARS} y {DESCRIPTION_MAX_CHARS} caracteres."
     )
 
-    # Single-turn: la conversación siempre tiene exactamente UN turno
-    # (user + assistant). Enviar una transcripción nueva lo reemplaza.
-    conversacion = st.session_state.get("conversacion")
+    # Single-shot: the previous result is replaced, not appended to. There is no
+    # conversation state because there is no conversation.
+    resultado = st.session_state.get("resultado")
 
-    if conversacion:
-        with st.chat_message("user"):
-            st.write(conversacion["transcripcion"])
-        with st.chat_message("assistant"):
-            st.write(conversacion["texto"])
-            resumen = _resumen(conversacion["captura"])
-            if resumen:
-                st.caption(resumen)
-        if st.button("🧹 Nueva transcripción"):
-            st.session_state.pop("conversacion", None)
+    if resultado:
+        st.markdown(resultado["text"])
+        st.caption(f"Prompt: {resultado['prompt_version']}")
+        if st.button("🧹 Nueva estimación"):
+            st.session_state.pop("resultado", None)
             st.rerun()
 
-    with st.form("transcripcion", clear_on_submit=False):
-        transcripcion = st.text_area(
-            "Transcripción de la reunión",
+    with st.form("estimacion", clear_on_submit=False):
+        description = st.text_area(
+            "Descripción del proyecto",
             height=180,
-            placeholder="Pegá acá la transcripción (mínimo 50 caracteres)...",
-            key="transcripcion_entrada",
+            max_chars=DESCRIPTION_MAX_CHARS,
+            placeholder="¿Qué hay que construir, para quién y con qué requisitos?...",
+            key="description_entrada",
         )
-        enviar = st.form_submit_button("Estimar duración", type="primary")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            project_type = st.selectbox(
+                "Tipo de proyecto",
+                options=list(PROJECT_TYPES),
+                format_func=PROJECT_TYPES.get,
+                key="project_type_entrada",
+            )
+        with c2:
+            detail_level = st.selectbox(
+                "Nivel de detalle",
+                options=list(DETAIL_LEVELS),
+                format_func=DETAIL_LEVELS.get,
+                key="detail_level_entrada",
+            )
+        with c3:
+            output_format = st.selectbox(
+                "Formato de salida",
+                options=list(OUTPUT_FORMATS),
+                format_func=OUTPUT_FORMATS.get,
+                key="output_format_entrada",
+            )
+        enviar = st.form_submit_button("Estimar", type="primary")
 
-    if enviar and transcripcion.strip():
-        # Single-turn: cualquier turno anterior desaparece ante la nueva entrada.
-        st.session_state.pop("conversacion", None)
-        captura: dict = {}
-        with st.chat_message("user"):
-            st.write(transcripcion.strip())
-        with st.chat_message("assistant"):
-            try:
-                texto = st.write_stream(_stream_deltas(api_base, transcripcion.strip(), captura))
-            except _ApiError as exc:
-                st.error(_detail_texto(exc.detail))
-                st.stop()
-            except httpx.HTTPError:
-                st.error(
-                    f"No se pudo conectar a {api_base}. Levantá la API con:\n\n"
-                    "`uv run python -m app`"
-                )
-                st.stop()
-            resumen = _resumen(captura)
-            if resumen:
-                st.caption(resumen)
-        st.session_state["conversacion"] = {
-            "transcripcion": transcripcion.strip(),
-            "texto": texto,
-            "captura": captura,
-        }
-        st.rerun()
-    elif enviar:
-        st.info("La transcripción no puede estar vacía.")
+    if not enviar:
+        return
+
+    limpio = description.strip()
+    if len(limpio) < DESCRIPTION_MIN_CHARS:
+        st.error(
+            f"La descripción necesita al menos {DESCRIPTION_MIN_CHARS} caracteres "
+            f"(tiene {len(limpio)})."
+        )
+        return
+
+    payload = {
+        "description": limpio,
+        "project_type": project_type,
+        "detail_level": detail_level,
+        "output_format": output_format,
+    }
+    try:
+        texto, prompt_version = _estimar(api_base, payload)
+    except _ApiError as exc:
+        st.error(_detail_texto(exc.detail))
+        return
+    except httpx.HTTPError:
+        st.error(f"No se pudo conectar a {api_base}. Levantá la API con:\n\n`uv run python -m app`")
+        return
+
+    st.session_state["resultado"] = {"text": texto, "prompt_version": prompt_version}
+    st.rerun()
 
 
 if __name__ == "__main__":

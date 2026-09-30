@@ -139,6 +139,12 @@ estructurada validada"— llega en WU8, y el diseño de esa capa no está escrit
 propósito: `SolicitudEstimacion` no tiene forma
 hasta que el prompt de WU4 exista.
 
+La estructura de prompts la fija el README, y es la de `../session_4/estimator`:
+`app/prompts/<use_case>/<version>/` con `system.j2`, `user.j2` y `examples.j2`
+separados, más un `loader.py` con `render_estimation_prompt(request, version="v1")`.
+La versión viaja en el path, no en el nombre del archivo: un `v2/` al lado de `v1/`
+entra sin tocar router ni schemas.
+
 **Lo que cambia cuando llegue WU8, y es más de lo que parece.** No alcanza con
 agregar clases: la forma de la respuesta pasa de `{text: str}` a
 `{tareas: [...], equipo: [...], ...}`, y eso toca el schema HTTP de WU2, el contrato
@@ -312,7 +318,7 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU1**~~ | Heredar el esqueleto de `lidr_3` (§5): copiar `config.py`, `main.py`, `tracing.py`, `cache.py` y la infra. CI en matriz. **Cerrado** | Resuelto |
 | ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
 | ~~**WU3**~~ | ~~Dominio con los totales calculados en código~~ **Revertido**: el modelo calcula. `app/domain/` borrado. Ver §3.4 | — |
-| **WU4** | `prompts/estimacion.v1.j2` versionado. Los few-shot salen de la misma plantilla | Bajo |
+| **WU4** | `app/prompts/estimation/v1/{system,user,examples}.j2` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")` | Bajo |
 | **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()`. Devuelve `text: str` sin parsear | Medio |
 | **WU6** | `EstimationRequest` en Streamlit → `POST /estimate` | Bajo |
 | **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
