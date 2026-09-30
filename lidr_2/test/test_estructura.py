@@ -5,6 +5,7 @@ la suite (pytest) y el pipeline (CI) la ejecuta junto al resto. Si alguien
 renombra `test/` a `tests/`, mueve `datos/`, o borra un archivo que el ejercicio
 pide, este test falla y el pipeline rojo lo dice.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -50,9 +51,8 @@ def test_el_pipeline_vive_en_la_raiz_del_monorepo():
 
 def test_la_estructura_de_carpetas_es_la_del_ejercicio():
     faltantes = [p for p in SE_ESPERA if not (REPO_ROOT / p).exists()]
-    assert not faltantes, (
-        "Faltan archivos/carpetas que el ejercicio exige:\n  "
-        + "\n  ".join(faltantes)
+    assert not faltantes, "Faltan archivos/carpetas que el ejercicio exige:\n  " + "\n  ".join(
+        faltantes
     )
 
 
@@ -70,9 +70,7 @@ def test_la_transcripcion_canonica_sirve_al_endpoint():
     from conftest import make_settings
 
     settings = make_settings()
-    md = (REPO_ROOT / "datos" / "transcripcion_reunion.md").read_text(
-        encoding="utf-8"
-    )
+    md = (REPO_ROOT / "datos" / "transcripcion_reunion.md").read_text(encoding="utf-8")
     inicio = md.index("<!-- transcripcion -->") + len("<!-- transcripcion -->")
     final = md.index("<!-- /transcripcion -->")
     texto = md[inicio:final].strip()

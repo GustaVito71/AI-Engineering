@@ -3,6 +3,7 @@
 `uvicorn app.main:app` a secas usa el 8000 (default del propio uvicorn) y
 choca cuando otro servicio lo tiene tomado (p. ej. Ganttly en Docker).
 Este lanzador usa APP_PORT de Settings, que por default es 8001."""
+
 from __future__ import annotations
 
 import argparse

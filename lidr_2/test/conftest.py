@@ -4,6 +4,7 @@ El detalle que importa: `make_settings` pasa `_env_file=None` y los valores
 explícitamente. Así un test no puede leer el .env local ni una API key real
 del entorno. Esa es la causa más común de suites que pasan en tu máquina y
 fallan en CI: una variable que tenés seteada en el shell."""
+
 from __future__ import annotations
 
 import pytest

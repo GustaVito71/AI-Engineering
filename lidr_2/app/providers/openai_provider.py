@@ -10,6 +10,7 @@ Decisiones de robustez (ver revisión de la sesión):
   el truncado por límite de tokens se detecta con
   response.incomplete_details.reason == "max_output_tokens".
 """
+
 from openai import (
     APIConnectionError,
     APIStatusError,

@@ -78,9 +78,7 @@ class Settings(BaseSettings):
         # None: el "no configurado" se detecta con falsy, no con `is None`.
         if not self.llm_model:
             self.llm_model = (
-                self.openai_model
-                if self.llm_provider == "openai"
-                else self.anthropic_model
+                self.openai_model if self.llm_provider == "openai" else self.anthropic_model
             )
         return self
 
@@ -94,11 +92,7 @@ class Settings(BaseSettings):
 
         Devuelve None si falta: eso es lo que /health necesita poder contar.
         """
-        raw = (
-            self.openai_api_key
-            if self.llm_provider == "openai"
-            else self.anthropic_api_key
-        )
+        raw = self.openai_api_key if self.llm_provider == "openai" else self.anthropic_api_key
         return raw.get_secret_value() if raw else None
 
     def require_api_key(self) -> str:

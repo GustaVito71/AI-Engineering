@@ -8,6 +8,7 @@ el resto prueban que el servicio cuida el coste y no miente:
 - un error del proveedor no llega entero al cliente (no filtrar secrets),
 - una respuesta cortada se expone como `truncated: true` (no mentir con un 200).
 """
+
 from __future__ import annotations
 
 from conftest import make_settings
@@ -28,6 +29,7 @@ TRANSCRIPCION_CORTA = "reunión"
 
 
 # ─── Coste estimado: tokens reales x LLMPrice, nunca se inventa ─────────
+
 
 def test_coste_se_calcula_de_tokens_reales():
     from app.services.pricing import estimate_cost
@@ -61,6 +63,7 @@ def test_coste_es_none_si_no_se_puede_calcular_con_datos_reales():
 
 
 # ─── El invariante: CAG significa que el cache llega al system prompt ────
+
 
 def test_los_ejemplos_llegan_al_system_prompt():
     prompt = build_system_prompt()
@@ -102,9 +105,7 @@ def test_los_roles_van_en_orden_y_la_transcripcion_es_dato(monkeypatch):
         return FakeProvider()
 
     monkeypatch.setattr(llm_service, "create_provider", fake_create)
-    llm_service.generate_estimation(
-        TRANSCRIPCION, make_settings(openai_api_key="k")
-    )
+    llm_service.generate_estimation(TRANSCRIPCION, make_settings(openai_api_key="k"))
 
     mensajes = capturado["messages"]
     assert [m.role for m in mensajes] == ["system", "user"]
@@ -128,9 +129,7 @@ def test_la_transcripcion_va_envuelta_en_delimitador_impredecible(monkeypatch):
         return FakeProvider()
 
     monkeypatch.setattr(llm_service, "create_provider", fake_create)
-    llm_service.generate_estimation(
-        TRANSCRIPCION, make_settings(openai_api_key="k")
-    )
+    llm_service.generate_estimation(TRANSCRIPCION, make_settings(openai_api_key="k"))
 
     user = capturado["messages"][1].content
     apertura = user.split("\n", 1)[0]
@@ -147,13 +146,12 @@ def test_la_transcripcion_va_envuelta_en_delimitador_impredecible(monkeypatch):
 
 # ─── Robustez: no gastar plata ni mentir ────────────────────────────────
 
+
 def test_entrada_corta_no_llama_al_llm(client, monkeypatch):
     def no_deberia_llamarse(*args, **kwargs):
         raise AssertionError("El LLM no debería invocarse con entrada inválida")
 
-    monkeypatch.setattr(
-        "app.routers.estimations.generate_estimation", no_deberia_llamarse
-    )
+    monkeypatch.setattr("app.routers.estimations.generate_estimation", no_deberia_llamarse)
     r = client.post("/api/v1/estimate", json={"transcription": TRANSCRIPCION_CORTA})
     assert r.status_code == 422
     assert "al menos" in r.text
@@ -163,9 +161,7 @@ def test_entrada_demasiado_larga_no_llama_al_llm(client, monkeypatch):
     def no_deberia_llamarse(*args, **kwargs):
         raise AssertionError("El LLM no debería invocarse con entrada inválida")
 
-    monkeypatch.setattr(
-        "app.routers.estimations.generate_estimation", no_deberia_llamarse
-    )
+    monkeypatch.setattr("app.routers.estimations.generate_estimation", no_deberia_llamarse)
     r = client.post(
         "/api/v1/estimate",
         json={"transcription": "a" * 60_000},
@@ -220,6 +216,7 @@ def test_error_del_proveedor_no_se_filtra_al_cliente(client, monkeypatch):
 
 
 # ─── El servicio arranca y /health sobrevive sin API key ────────────────
+
 
 def test_health_responde_sin_key():
     settings = make_settings(openai_api_key=None, anthropic_api_key=None)

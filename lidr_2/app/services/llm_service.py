@@ -12,6 +12,7 @@ Flujo de una estimación:
 4. Señalar si la respuesta se truncó: en CAG un 200 con la respuesta a medio
    escribir es la peor clase de fallo, la que no se ve.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -91,9 +92,7 @@ def generate_estimation(
             max_tokens=settings.llm_max_tokens,
         )
     except LLMProviderError as exc:
-        raise LLMServiceError(
-            f"Fallo del proveedor '{settings.llm_provider}'"
-        ) from exc
+        raise LLMServiceError(f"Fallo del proveedor '{settings.llm_provider}'") from exc
     # NO se captura Exception: los bugs internos deben salir como 500,
     # no disfrazados de fallo del proveedor.
 

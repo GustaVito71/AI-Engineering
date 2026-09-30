@@ -9,6 +9,7 @@ forma de distinguir "falta un secreto" de "el código está roto".
 No hay middleware CORS a propósito: no existe frontend que llame a esta API
 desde un navegador, y CORS es una protección del navegador. Se agrega solo
 cuando haya uno (con allow_origins explícito desde Settings)."""
+
 from __future__ import annotations
 
 import logging
@@ -44,9 +45,7 @@ def configure_logging(level: str = "INFO") -> None:
     )
     handler = logging.StreamHandler()
     handler.setFormatter(
-        structlog.stdlib.ProcessorFormatter(
-            processor=structlog.dev.ConsoleRenderer()
-        )
+        structlog.stdlib.ProcessorFormatter(processor=structlog.dev.ConsoleRenderer())
     )
     root = logging.getLogger()
     root.handlers = [handler]
