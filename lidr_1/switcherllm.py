@@ -27,11 +27,15 @@ class LLMClient:
     la estrategia, se puede sustituir en caliente sin tocar este código.
     """
 
-    def __init__(self, provider_name: str, system_prompt: str = None, **provider_kwargs):
+    def __init__(
+        self, provider_name: str, system_prompt: str = None, **provider_kwargs
+    ):
         # La fábrica construye el adaptador; aquí solo almacenamos una referencia
         self.current = ProviderFactory.create(provider_name, **provider_kwargs)
         # Rol del asistente (system prompt): default o el pasado por el llamador
-        self.system_prompt = system_prompt or "Eres un asistente breve que responde en español."
+        self.system_prompt = (
+            system_prompt or "Eres un asistente breve que responde en español."
+        )
 
     def set_role(self, system_prompt: str) -> None:
         # Define el rol (system prompt) que verá el LLM antes del mensaje del usuario
@@ -51,7 +55,9 @@ class LLMClient:
             Message(role="system", content=self.system_prompt),
             Message(role="user", content=prompt),
         ]
-        resp = self.current.chat(message, **kwargs)  # misma conversación, cualquier proveedor
+        resp = self.current.chat(
+            message, **kwargs
+        )  # misma conversación, cualquier proveedor
         print(f"  {resp.content}\n")
 
         if resp.usage:
@@ -87,7 +93,9 @@ def main(client: LLMClient) -> None:
     while True:
         print(f"Proveedor actual: {client.current.name}")
         print("Proveedores disponibles: " + ", ".join(available))
-        prompt = input("\nPrompt (o 'modelos', 'switch <proveedor>', 'role <texto>', 'salir'): ").strip()
+        prompt = input(
+            "\nPrompt (o 'modelos', 'switch <proveedor>', 'role <texto>', 'salir'): "
+        ).strip()
 
         if prompt.lower() == "salir":
             break
@@ -146,7 +154,9 @@ def run() -> None:
     # Se lee la variable de entorno LLM_DEFAULT si existe, si no anthropic
     default_provider = os.environ.get("LLM_DEFAULT", "anthropic")
     # Se lee la variable de entorno LLM_ROLE si existe, si no el rol por defecto
-    default_role = os.environ.get("LLM_ROLE", "Eres un asistente breve que responde en español.")
+    default_role = os.environ.get(
+        "LLM_ROLE", "Eres un asistente breve que responde en español."
+    )
     # el cliente se crea UNA vez y se reutiliza
     client = LLMClient(default_provider, system_prompt=default_role)
     print(f"\nIniciando SwitcherLLM con proveedor default: {default_provider}\n")

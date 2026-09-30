@@ -14,7 +14,11 @@ from google.genai import types  # tipos del SDK (Content, Part, configs de gener
 from google.genai.errors import APIError, ServerError  # errores propios del SDK
 
 from .base import Message, LLMResponse, BaseProvider
-from .errors import LLMError, RateLimitError as AppRateLimitError, AuthenticationError as AppAuthError
+from .errors import (
+    LLMError,
+    RateLimitError as AppRateLimitError,
+    AuthenticationError as AppAuthError,
+)
 
 
 class GeminiProvider(BaseProvider):
@@ -44,16 +48,35 @@ class GeminiProvider(BaseProvider):
         except APIError as e:
             raise LLMError(self.name, str(e), getattr(e, "code", None)) from e
         # Lista de subcadenas que delatan modelos NO textuales
-        excluded = ("image", "audio", "live", "tts", "transcribe", "embedding",
-                    "veo", "lyria", "robotics", "aqa", "nano-banana",
-                    "computer-use", "deep-research", "antigravity")
+        excluded = (
+            "image",
+            "audio",
+            "live",
+            "tts",
+            "transcribe",
+            "embedding",
+            "veo",
+            "lyria",
+            "robotics",
+            "aqa",
+            "nano-banana",
+            "computer-use",
+            "deep-research",
+            "antigravity",
+        )
         return sorted(
-            n for n in names
+            n
+            for n in names
             if (n.startswith("gemini-") or n.startswith("gemma-"))  # solo chat
             and not any(flag in n for flag in excluded)
         )
 
-    def chat(self, messages: list[Message], model: str | None = None, temperature: float = 0.7) -> LLMResponse:
+    def chat(
+        self,
+        messages: list[Message],
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> LLMResponse:
         """Estructura típica de una llamada a Google Gemini (SDK).
 
         Dato de aprendizaje: Gemini modela la conversación con objetos
@@ -64,12 +87,17 @@ class GeminiProvider(BaseProvider):
         # Gemini usa el modelo de "transacción" para system prompts
         # Convierte nuestros Message a types.Content (roles "user"/"model")
         contents = [
-            types.Content(role="model" if m.role == "assistant" else "user", parts=[types.Part(text=m.content)])
+            types.Content(
+                role="model" if m.role == "assistant" else "user",
+                parts=[types.Part(text=m.content)],
+            )
             for m in messages
             if m.role != "system"
         ]
         # El system prompt se separa y se pasa como instrucción de sistema
-        system_parts = [types.Part(text=m.content) for m in messages if m.role == "system"]
+        system_parts = [
+            types.Part(text=m.content) for m in messages if m.role == "system"
+        ]
         try:
             response = self.client.models.generate_content(
                 model=model,
@@ -84,8 +112,12 @@ class GeminiProvider(BaseProvider):
                 content=response.text or "",
                 model=response.model_version,  # metadato propio de la respuesta
                 usage={  # el SDK expone el gasto en usage_metadata; normalizamos nombres
-                    "input_tokens": response.usage_metadata.prompt_token_count if response.usage_metadata else None,
-                    "output_tokens": response.usage_metadata.candidates_token_count if response.usage_metadata else None,
+                    "input_tokens": response.usage_metadata.prompt_token_count
+                    if response.usage_metadata
+                    else None,
+                    "output_tokens": response.usage_metadata.candidates_token_count
+                    if response.usage_metadata
+                    else None,
                 },
             )
         except ServerError as e:
@@ -93,9 +125,13 @@ class GeminiProvider(BaseProvider):
             code = e.code if hasattr(e, "code") else None
             message = str(e)
             if "PERMISSION_DENIED" in message or (code and code == 403):
-                raise AppAuthError(self.name, "API key inválida o sin permisos", code or 403) from e
+                raise AppAuthError(
+                    self.name, "API key inválida o sin permisos", code or 403
+                ) from e
             if "RESOURCE_EXHAUSTED" in message or (code and code == 429):
-                raise AppRateLimitError(self.name, "Rate limit superado (RESOURCE_EXHAUSTED)", code or 429) from e
+                raise AppRateLimitError(
+                    self.name, "Rate limit superado (RESOURCE_EXHAUSTED)", code or 429
+                ) from e
             raise LLMError(self.name, message, code) from e
         except APIError as e:
             raise LLMError(self.name, str(e), getattr(e, "code", None)) from e
