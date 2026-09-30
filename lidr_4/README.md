@@ -19,20 +19,20 @@ cp .env.example .env  # añade al menos OPENAI_API_KEY o ANTHROPIC_API_KEY
 docker compose up --build
 ```
 
-El servicio queda en `http://localhost:8000` (Swagger en `/docs`, health en `/health`). Redis arranca como servicio vecino para el cache exact-match del wrapper.
+El servicio queda en `http://localhost:8001` (Swagger en `/docs`, health en `/health`). Redis arranca como servicio vecino para el cache exact-match del wrapper.
 
 ### Sin Docker
 
 ```bash
 cd estimator
 uv sync
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --port 8001
 ```
 
 ### Probar el endpoint
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/estimate \
+curl -X POST http://localhost:8001/api/v1/estimate \
   -H "Content-Type: application/json" \
   -d '{
     "description": "A small B2B SaaS to manage employee equipment loans across teams. Role-based access, audit trail, weekly digest.",
@@ -61,7 +61,7 @@ uv run streamlit run streamlit_app.py
 # Abrir http://localhost:8501
 ```
 
-La URL del servicio se lee de `ESTIMATOR_API_BASE_URL` (default `http://localhost:8000`).
+La URL del servicio se lee de `ESTIMATOR_API_BASE_URL` (default `http://localhost:8001`).
 
 ## Cómo testar
 
@@ -72,10 +72,11 @@ uv run pytest
 
 La batería corre en milisegundos sin tocar APIs externas. Cubre cuatro categorías:
 
-- `tests/test_schemas.py` — validaciones del `EstimationRequest` (longitudes, enums, campos obligatorios).
-- `tests/test_prompts.py` — render del template `v1`: `description` aparece dentro de `<project_description>`, los bloques condicionales por `output_format` y `detail_level` solo se incluyen cuando aplica, y `StrictUndefined` falla early ante variables faltantes.
-- `tests/test_estimate_endpoint.py` — endpoint con el wrapper LLM mockeado vía `app.dependency_overrides`: comprueba el contrato 200/422, que `system_prompt` y `user_message` viajan separados, y que la respuesta lleva `prompt_version="v1"`.
-- `tests/test_llm_wrapper.py` y `tests/test_cache.py` — wrapper y cache de la Sesión 03, intactos.
+- `test/test_schemas.py` — validaciones del `EstimationRequest` (longitudes, enums, campos obligatorios).
+- `test/test_prompts.py` — render del template `v1`: `description` aparece dentro de `<project_description>`, los bloques condicionales por `output_format` y `detail_level` solo se incluyen cuando aplica, y `StrictUndefined` falla early ante variables faltantes.
+- `test/test_estimate_endpoint.py` — endpoint con el wrapper LLM mockeado vía `app.dependency_overrides`: comprueba el contrato 200/422, que `system_prompt` y `user_message` viajan separados, y que la respuesta lleva `prompt_version="v1"`.
+- `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, y un 422 de FastAPI llega como lista de `msg`.
+- `test/test_llm_wrapper.py` y `test/test_cache.py` — wrapper y cache de la Sesión 03, intactos.
 
 ## Estructura del proyecto
 
@@ -99,8 +100,9 @@ estimator/
 │   └── services/
 │       ├── llm_wrapper.py             # LiteLLM Router con fallback y cost tracking
 │       └── cache.py                   # Redis exact-match cache
-├── tests/
+├── test/
 │   ├── test_schemas.py
+│   ├── test_frontend.py
 │   ├── test_prompts.py
 │   ├── test_estimate_endpoint.py
 │   ├── test_llm_wrapper.py
@@ -128,7 +130,7 @@ Lo que vive **fuera** del template (en código): el contrato (`EstimationRequest
 | `REDIS_URL` | `redis://localhost:6379` | Cache exact-match |
 | `CACHE_TTL` | `86400` | Segundos |
 | `APP_ENV` | `development` | Controla el renderer de structlog |
-| `ESTIMATOR_API_BASE_URL` | `http://localhost:8000` | Lo lee el cliente Streamlit |
+| `ESTIMATOR_API_BASE_URL` | `http://localhost:8001` | Lo lee el cliente Streamlit |
 
 `get_settings()` es un singleton cacheado con `lru_cache`: cualquier cambio en `.env` requiere reiniciar uvicorn (no basta con `--reload`).
 
