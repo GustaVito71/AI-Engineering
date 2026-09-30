@@ -48,9 +48,7 @@ class AnthropicProvider(BaseProvider):
         if not max_tokens:
             raise ValueError("Anthropic exige max_tokens explícito")
 
-        system_prompt = "\n".join(
-            m.content for m in messages if m.role == "system"
-        )
+        system_prompt = "\n".join(m.content for m in messages if m.role == "system")
         user_messages = [
             {"role": "user", "content": m.content} for m in messages if m.role == "user"
         ]

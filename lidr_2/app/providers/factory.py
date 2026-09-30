@@ -3,6 +3,7 @@
 Recibe argumentos ya resueltos (incluida la key, extraída en el punto de uso
 por el servicio); aquí solo se mapea el nombre a la clase. Ninguna decisión
 de configuración vive en esta capa."""
+
 from .anthropic_provider import AnthropicProvider
 from .base import BaseProvider
 from .errors import UnknownProviderError

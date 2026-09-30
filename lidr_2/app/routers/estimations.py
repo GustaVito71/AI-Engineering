@@ -4,6 +4,7 @@ borde, antes de gastar un token) y traducir errores de dominio a HTTP.
 No conoce el SDK de ningún proveedor: el servicio le devuelve `EstimationResult`
 o le lanza sus propias excepciones. La traducción a códigos HTTP es la única
 responsabilidad de esta capa."""
+
 from __future__ import annotations
 
 import structlog
