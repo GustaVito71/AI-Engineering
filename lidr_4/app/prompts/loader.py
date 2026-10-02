@@ -124,6 +124,7 @@ def _compute_version_data(version: str) -> dict:
 
         computed_examples.append(
             {
+                "project_type": ex["project_type"],
                 "project_description": ex["project_description"],
                 "phases": computed_phases,
                 "totals": {

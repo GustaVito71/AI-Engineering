@@ -33,11 +33,12 @@ rounding:
 # Productive hours per person-week (used in <scope> and in the loader's arithmetic).
 productive_hours_per_week: 32
 
-# Examples: each has project_description + phases with team composition.
+# Examples: each has project_type + project_description + phases with team composition.
 # Hours, costs, totals and team headcount are COMPUTED by the loader.
 # How they are displayed is decided by system.j2.
 examples:
-  - project_description: >-
+  - project_type: web_saas
+    project_description: >-
       A small B2B SaaS to manage employee equipment loans (laptops, headsets).
       Single tenant per customer, role-based access for HR and IT,
       audit trail of every loan, weekly email digest. No mobile app.
@@ -71,7 +72,8 @@ examples:
           designer: 1
         confidence_pct: 80
 
-  - project_description: >-
+  - project_type: mobile_app
+    project_description: >-
       Native mobile app (iOS + Android) for a meal-prep startup: catalogue
       browsing, weekly subscription, payment via Stripe, push notifications,
       and a delivery tracking screen wired to an existing logistics API.
@@ -106,7 +108,8 @@ examples:
           designer: 1
         confidence_pct: 80
 
-  - project_description: >-
+  - project_type: internal_tool
+    project_description: >-
       Internal tool to centralise marketing assets across three brands: search,
       tagging, role-based access for marketing and legal, and an approval
       workflow before assets become public.
@@ -138,4 +141,39 @@ examples:
         team:
           developer: 1
           designer: 1
+        confidence_pct: 80
+
+  - project_type: data_pipeline
+    project_description: >-
+      Data pipeline to ingest, transform, and serve analytics events from
+      multiple SaaS sources (Salesforce, HubSpot, Stripe) into a
+      cloud data warehouse (Snowflake). Includes CDC, dbt models,
+      data quality checks, and a self-service BI layer (Metabase).
+    phases:
+      - phase: Discovery
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+      - phase: Design
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 75
+      - phase: Implementation
+        duration_weeks: 8
+        team:
+          developer: 3
+        confidence_pct: 65
+      - phase: QA
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 70
+      - phase: Launch
+        duration_weeks: 1
+        team:
+          developer: 1
         confidence_pct: 80

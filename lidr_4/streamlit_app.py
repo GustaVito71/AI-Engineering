@@ -118,7 +118,7 @@ def main() -> None:
         try:
             health = httpx.get(f"{api_base}/health", timeout=3.0).json()
             st.sidebar.success(
-                f"Conectado: {health.get('provider')} · {health.get('model')}"
+                f"Conectado: {health.get('primary_model')} · {health.get('fallback_model')}"
                 f"{' · key ok' if health.get('llm_configured') else ' · FALTA API KEY'}"
             )
             if not health.get("llm_configured"):

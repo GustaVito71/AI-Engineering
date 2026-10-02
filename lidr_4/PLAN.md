@@ -332,7 +332,7 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU1**~~ | Heredar el esqueleto de `lidr_3` (§5): copiar `config.py`, `main.py`, `tracing.py`, `cache.py` y la infra. CI en matriz. **Cerrado** | Resuelto |
 | ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
 | ~~**WU3**~~ | ~~Dominio con los totales calculados en código~~ **Revertido**: el modelo calcula. `app/domain/` borrado. Ver §3.4 | — |
-| ~~**WU4**~~ | `app/prompts/estimation/v1/{system.j2,user.j2,examples.yaml}` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")`. Ejemplos como datos, maquetados por `output_format`; roles, tarifas y redondeo en el YAML. 18 tests. **Cerrado** | Resuelto |
+| ~~**WU4**~~ | `app/prompts/estimation/v1/{system.j2,user.j2,examples.yaml}` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")`. Ejemplos como datos, maquetados por `output_format`; roles, tarifas y redondeo en el YAML. 19 tests. **Cerrado** | Resuelto |
 | **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()`. Devuelve `text: str` sin parsear | Medio |
 | ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. 9 tests con transporte mockeado. **Cerrado** (sin probar contra la API real hasta WU5) | Resuelto |
 | **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
