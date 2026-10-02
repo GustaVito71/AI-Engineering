@@ -3,8 +3,10 @@
 Quinta capa del curso. Evoluciona el estimador de `../lidr_3/` para controlar la
 variabilidad de la salida. `../ganttly/` queda como backlog/playground.
 
-Este documento es el plan de construcción. El `README.md` del proyecto se escribe
-al final, cuando el código exista.
+Este documento es el plan de construcción: el porqué de las decisiones y el orden
+de las unidades de trabajo. **El `README.md` es la referencia del estado actual**
+(estructura, cómo levantar y testar, reparto de responsabilidades en los prompts,
+variables de entorno). Si algo de este plan lo contradice, manda el README.
 
 ---
 
@@ -18,7 +20,7 @@ Cinco capas, en este orden de dependencia:
 | 2 | Plantillas Jinja2 versionadas | El prompt es un artefacto revisable, no un string en código |
 | 3 | Salida estructurada validada | La variabilidad del LLM deja de ser un problema de parseo |
 | 4 | Guardrails | Entrada y salida dejan de ser campos de confianza |
-| 5 | Caché semántico | Consultos equivalentes no vuelven a llamar al modelo |
+| 5 | Caché semántico | Consultas equivalentes no vuelven a llamar al modelo |
 
 Las capas 1 y 2 eliminan variabilidad *a la entrada*. La 3 la elimina *a la
 salida*. La 4 la acota. La 5 la evita.
@@ -33,7 +35,7 @@ conoce el problema que resuelven.
 | Decisión | Por qué |
 |---|---|
 | `EstimationRequest` alimenta la UI; el contrato del LLM aparece en WU8 | La UI puede cambiar sin tocar el prompt ni la salida del modelo |
-| Los few-shot salen de la misma plantilla versionada que el prompt | Una sola fuente. Se elimina la clase de bugs "el ejemplo 3 enseña un formato que el prompt ya no pide" |
+| Los few-shot se versionan con el prompt: datos en `v1/examples.yaml`, presentación en macros de `v1/system.j2` | Una sola fuente por versión. Los ejemplos se maquetan según el `output_format` pedido, así que se elimina la clase de bugs "el ejemplo 3 enseña un formato que el prompt ya no pide" |
 | `total_horas` y `duracion_semanas` los calcula el modelo | Es lo que hace `../session_4/estimator`. Obliga al modelo a comprometerse con un total. Ver §3.4 |
 | LiteLLM `Router` es el **único** dueño de retry y fallback | Dos niveles de retry se multiplican y su composición es imposible de razonar |
 | Gateway **async** con `router.acompletion` | El endpoint es async; un cliente sync bloquea el event loop |
@@ -139,11 +141,19 @@ estructurada validada"— llega en WU8, y el diseño de esa capa no está escrit
 propósito: `SolicitudEstimacion` no tiene forma
 hasta que el prompt de WU4 exista.
 
-La estructura de prompts la fija el README, y es la de `../session_4/estimator`:
-`app/prompts/<use_case>/<version>/` con `system.j2`, `user.j2` y `examples.j2`
-separados, más un `loader.py` con `render_estimation_prompt(request, version="v1")`.
+La estructura de prompts la fija el README y parte de la de `../session_4/estimator`:
+`app/prompts/<use_case>/<version>/` con `system.j2`, `user.j2` y `examples.yaml`,
+más un `loader.py` con `render_estimation_prompt(request, version="v1")`.
 La versión viaja en el path, no en el nombre del archivo: un `v2/` al lado de `v1/`
 entra sin tocar router ni schemas.
+
+**Diferencia con la referencia:** `session_4/estimator` tiene un `examples.j2` con
+los ejemplos ya escritos como tabla. Acá se reemplazó por datos (`examples.yaml`) y
+macros de presentación en `system.j2`, por tres problemas que tenía el `.j2` fijo:
+el `include` llevaba `v1` escrito en la ruta, los ejemplos mostraban una tabla aunque
+se pidiera `narrative` o `line_items`, y los costes no cuadraban con las tarifas de
+`<scope>`. Qué contiene y qué decide cada archivo (`examples.yaml`, `system.j2`,
+`loader.py`) está en el README, sección *Versionado de prompts*, que es la referencia.
 
 **Lo que cambia cuando llegue WU8, y es más de lo que parece.** No alcanza con
 agregar clases: la forma de la respuesta pasa de `{text: str}` a
@@ -165,6 +175,11 @@ línea en un `.j2` se lee. El intercambio es deliberado —`session_4/estimator`
 cálculo en código— pero conviene saber que se pierde: un cambio de `0.8` a `1.0`
 ya no rompe ningún test, solo cambia el prompt y hay que notarlo en el diff.
 
+**Matiz desde WU4:** las tarifas, las horas productivas y el redondeo ya no son
+líneas sueltas del `.j2`. Viven en `examples.yaml` y alimentan tanto `<scope>` como
+los ejemplos, y `test_prompts.py` comprueba que los ejemplos cuadren con ellos. Lo
+que sigue sin test es que **el modelo** respete esas reglas en su respuesta.
+
 ### 3.3 `SOLICITUD_ESTIMACION` — capa 3, contrato del LLM (WU8)
 
 **Todavía no implementado.** Se diseña en WU8, cuando exista el prompt de WU4 que
@@ -177,10 +192,9 @@ Lo que se sabe hoy, y no es mucho:
 - `total_horas` y `duracion_semanas` los **emite el modelo**, y el sistema no los
   recalcula. Es el cambio de alcance que se decidió después de implementar
   lo contrario.
-  contrario.
 - Las validaciones que hacen falta ya se conocen por haber estado escritas:
   `horas` y `cantidad` con `gt=0`, IDs únicos, `depende_de` sin huérfanas ni ciclos.
-  Esas tres se postmenopausal en WU8, no antes.
+  Esas tres se implementan en WU8, no antes.
 
 Lo que **no** se decide ahora: si el total se valida contra la suma de las tareas, si
 se acepta y se loguea la discrepancia, o si se re-pregunta al modelo. Esa decisión
@@ -318,9 +332,9 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU1**~~ | Heredar el esqueleto de `lidr_3` (§5): copiar `config.py`, `main.py`, `tracing.py`, `cache.py` y la infra. CI en matriz. **Cerrado** | Resuelto |
 | ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
 | ~~**WU3**~~ | ~~Dominio con los totales calculados en código~~ **Revertido**: el modelo calcula. `app/domain/` borrado. Ver §3.4 | — |
-| **WU4** | `app/prompts/estimation/v1/{system,user,examples}.j2` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")` | Bajo |
+| ~~**WU4**~~ | `app/prompts/estimation/v1/{system.j2,user.j2,examples.yaml}` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")`. Ejemplos como datos, maquetados por `output_format`; roles, tarifas y redondeo en el YAML. 18 tests. **Cerrado** | Resuelto |
 | **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()`. Devuelve `text: str` sin parsear | Medio |
-| **WU6** | `EstimationRequest` en Streamlit → `POST /estimate` | Bajo |
+| ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. 9 tests con transporte mockeado. **Cerrado** (sin probar contra la API real hasta WU5) | Resuelto |
 | **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
 | **WU8** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
 | **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
@@ -442,10 +456,12 @@ con eventos de token. No hizo falta.
 
 Documentadas aquí para que nadie las "corrija" después.
 
-**Los totales no los declara el modelo.** La referencia de `session_3` los pide
-y después los verifica con `abs(suma - declarado) <= 1` para las horas y `<= 2%`
-para el coste. Esas tolerancias son una admisión de que la aritmética del modelo
-no es confiable. Acá la tolerancia es 0 porque no hay nada que validar.
+**Los totales los declara el modelo (desde el 29/09, ver §3.4).** La referencia de
+`session_3` los pide y después los verifica con `abs(suma - declarado) <= 1` para
+las horas y `<= 2%` para el coste. Esas tolerancias son una admisión de que la
+aritmética del modelo no es confiable. El diseño original evitaba el problema
+calculando los totales en código (tolerancia 0); al revertirlo, la tolerancia pasa a
+ser la del modelo y la decisión de cómo validarla queda abierta para WU8 (§3.3).
 
 **Sin `MODEL_COSTS` propia.** La referencia mantiene una tabla de precios
 hardcodeada, y desactualizada. Eso contradice el motivo principal de adoptar

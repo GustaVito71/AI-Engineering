@@ -1,0 +1,141 @@
+# Example data for prompt version v1.
+# Stored per-version so published prompts are immutable.
+# Loader reads this file; changing it creates a new version, not a silent edit.
+
+# Roles: single source of truth for rates AND for how each role is displayed.
+# - label / plural: presentation, used by system.j2 (<scope>, line items, team summary).
+# - eur_per_hour: used by the loader's arithmetic.
+# The order of this map is the order in which roles appear in <scope> and in
+# the team summary. Adding a role here is enough: no Python change needed.
+rates:
+  developer:
+    label: Developer
+    plural: Developers
+    eur_per_hour: 62.50
+  designer:
+    label: Designer
+    plural: Designers
+    eur_per_hour: 50.00
+  pm:
+    label: PM
+    plural: PMs
+    eur_per_hour: 62.50
+  qa:
+    label: QA
+    plural: QAs
+    eur_per_hour: 62.50
+
+# Rounding rules (used in <scope> and in the loader's arithmetic).
+rounding:
+  hours_base: 5
+  cost_base: 50
+
+# Productive hours per person-week (used in <scope> and in the loader's arithmetic).
+productive_hours_per_week: 32
+
+# Examples: each has project_description + phases with team composition.
+# Hours, costs, totals and team headcount are COMPUTED by the loader.
+# How they are displayed is decided by system.j2.
+examples:
+  - project_description: >-
+      A small B2B SaaS to manage employee equipment loans (laptops, headsets).
+      Single tenant per customer, role-based access for HR and IT,
+      audit trail of every loan, weekly email digest. No mobile app.
+    phases:
+      - phase: Discovery
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 85
+      - phase: Design
+        duration_weeks: 1
+        team:
+          designer: 1
+          developer: 1
+        confidence_pct: 80
+      - phase: Implementation
+        duration_weeks: 5
+        team:
+          developer: 2
+        confidence_pct: 70
+      - phase: QA
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 75
+      - phase: Launch
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_description: >-
+      Native mobile app (iOS + Android) for a meal-prep startup: catalogue
+      browsing, weekly subscription, payment via Stripe, push notifications,
+      and a delivery tracking screen wired to an existing logistics API.
+    phases:
+      - phase: Discovery
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+          pm: 1
+        confidence_pct: 80
+      - phase: Design
+        duration_weeks: 3
+        team:
+          designer: 2
+          developer: 1
+        confidence_pct: 75
+      - phase: Implementation
+        duration_weeks: 9
+        team:
+          developer: 4
+        confidence_pct: 65
+      - phase: QA
+        duration_weeks: 2
+        team:
+          qa: 2
+        confidence_pct: 70
+      - phase: Launch
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_description: >-
+      Internal tool to centralise marketing assets across three brands: search,
+      tagging, role-based access for marketing and legal, and an approval
+      workflow before assets become public.
+    phases:
+      - phase: Discovery
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 85
+      - phase: Design
+        duration_weeks: 2
+        team:
+          designer: 1
+          developer: 1
+        confidence_pct: 80
+      - phase: Implementation
+        duration_weeks: 6
+        team:
+          developer: 2
+        confidence_pct: 70
+      - phase: QA
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 75
+      - phase: Launch
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
