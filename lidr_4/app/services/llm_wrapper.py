@@ -10,10 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from litellm import Router, acompletion
-from litellm.types.router import Deployment as DeploymentDict
+from litellm import Router, completion_cost
 
-from app.config import get_settings
+from app.config import LLMConfigurationError, get_settings
 
 
 @dataclass
@@ -38,72 +37,71 @@ class LLMWrapper:
         openai_api_key: str | None,
         anthropic_api_key: str | None,
         primary_model: str,
-        fallback_model: str,
+        fallback_model: str | None,
         timeout: float,
         num_retries: int,
         model_group: str,
         cache: Any,  # EstimationCache
     ) -> None:
         self._cache = cache
+        self._primary_model = primary_model
+        self._fallback_model = fallback_model
+        self._timeout = timeout
+        self._num_retries = num_retries
         self._model_group = model_group
 
         settings = get_settings()
 
+        # Resolve API keys using Settings.active_api_key
+        primary_provider = primary_model.split("/", 1)[0] if "/" in primary_model else "openai"
+        fallback_provider = (
+            (fallback_model or "").split("/", 1)[0]
+            if fallback_model and "/" in fallback_model
+            else "openai"
+        )
+
+        primary_key = settings.active_api_key(primary_provider)
+        fallback_key = settings.active_api_key(fallback_provider) if fallback_model else None
+
+        if not primary_key:
+            raise LLMConfigurationError(
+                f"Missing API key for primary model {primary_model} (provider: {primary_provider})"
+            )
+        if fallback_model and not fallback_key:
+            raise LLMConfigurationError(
+                f"Missing API key for fallback model {fallback_model} "
+                f"(provider: {fallback_model.split('/', 1)[0] if '/' in fallback_model else 'openai'})"
+            )
+
         # Build deployments for the Router
-        primary_deployment = self._build_deployment(
-            model_name=primary_model,
-            litellm_model=primary_model,
-            api_key=(
-                openai_api_key.get_secret_value()
-                if openai_api_key and settings.primary_provider == "openai"
-                else anthropic_api_key.get_secret_value()
-                if anthropic_api_key
-                else None
-            ),
-        )
-        fallback_deployment = self._build_deployment(
-            model_name=fallback_model,
-            litellm_model=fallback_model,
-            api_key=(
-                openai_api_key.get_secret_value()
-                if openai_api_key and settings.fallback_provider == "openai"
-                else anthropic_api_key.get_secret_value()
-                if anthropic_api_key
-                else None
-            ),
-        )
+        deployments = [
+            {
+                "model_name": primary_model,
+                "litellm_params": {"model": primary_model, "api_key": primary_key},
+            },
+        ]
+        if fallback_model:
+            deployments.append(
+                {
+                    "model_name": fallback_model,
+                    "litellm_params": {"model": fallback_model, "api_key": fallback_key},
+                }
+            )
 
         self._router = Router(
-            model_list=[primary_deployment, fallback_deployment],
-            routing_strategy="simple-shuffle",
-            fallbacks=[{primary_model: [fallback_model]}],
-            num_retries=2,
-            timeout=settings.llm_timeout,
+            model_list=deployments,
+            fallbacks=[{primary_model: [fallback_model]}] if fallback_model else [],
+            num_retries=num_retries,
+            timeout=timeout,
         )
 
-        self._primary_model = primary_model
-        self._fallback_model = fallback_model
-        self._timeout = timeout
-        self._max_retries = 2
-
-    def _build_deployment(
-        self,
-        model_name: str,
-        litellm_model: str,
-        api_key: str | None,
-    ) -> DeploymentDict:
-        """Construye un deployment para el LiteLLM Router."""
-        provider = litellm_model.split("/", 1)[0] if "/" in litellm_model else "openai"
-        params = {
-            "model": litellm_model,
+        # El Router asigna a cada deployment un id interno (un hash) y lo devuelve
+        # en response._hidden_params["model_id"]. Este mapa lo traduce al nombre
+        # del modelo ("openai/gpt-4o-mini"), que es lo que se expone y se cachea.
+        self._modelo_por_id = {
+            d["model_info"]["id"]: d["litellm_params"]["model"] for d in self._router.model_list
         }
-        if api_key:
-            params["api_key"] = api_key
-        return {
-            "model_name": model_name,
-            "litellm_params": params,
-            "model_info": {"provider": provider},
-        }
+        self._max_tokens = settings.llm_max_tokens
 
     async def estimate(
         self,
@@ -111,7 +109,7 @@ class LLMWrapper:
         system_prompt: str,
         user_prompt: str,
         prompt_version: str,
-        max_tokens: int = 4000,
+        max_tokens: int | None = None,
     ) -> LLMCallResult:
         """Ejecuta la estimación con fallback automático y cache."""
         # Check cache first
@@ -128,41 +126,35 @@ class LLMWrapper:
                 prompt_version=prompt_version,
             )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        response = await acompletion(
+        response = await self._router.acompletion(
             model=self._primary_model,
-            messages=messages,
-            max_tokens=4000,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens or self._max_tokens,
             temperature=0.1,
         )
 
-        # Extract response content and metadata
         content = response.choices[0].message.content
-        model = response.model
-        provider = self._get_provider_from_model(model)
 
-        # Calculate cost from usage
+        # Qué deployment respondió (primario o respaldo), traducido a su nombre.
+        deployment_id = (getattr(response, "_hidden_params", None) or {}).get("model_id")
+        model = self._modelo_por_id.get(deployment_id, response.model)
+        provider = model.split("/", 1)[0] if "/" in model else "unknown"
+
         usage = response.usage
         prompt_tokens = usage.prompt_tokens if usage else 0
         completion_tokens = usage.completion_tokens if usage else 0
-        cost_usd = self._calculate_cost(provider, prompt_tokens, completion_tokens)
 
-        # Cache the result
-        cache_data = {
-            "content": content,
-            "model": model,
-            "provider": provider,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "cost_usd": cost_usd,
-        }
-        await self._cache.set(cache_key, cache_data)
+        # Un modelo sin precio en la tabla de LiteLLM no debe convertir una
+        # respuesta válida en un error: el coste es observabilidad, no negocio.
+        try:
+            cost_usd = completion_cost(response)
+        except Exception:  # noqa: BLE001
+            cost_usd = 0.0
 
-        return LLMCallResult(
+        result = LLMCallResult(
             content=content,
             model=model,
             provider=provider,
@@ -171,28 +163,15 @@ class LLMWrapper:
             cost_usd=cost_usd,
             prompt_version=prompt_version,
         )
-
-    def _get_provider_from_model(self, model: str) -> str:
-        """Extract provider from model name returned by LiteLLM."""
-        if model.startswith("openai/"):
-            return "openai"
-        elif model.startswith("anthropic/"):
-            return "anthropic"
-        elif model.startswith("gemini/"):
-            return "google"
-        elif model.startswith("bedrock/"):
-            return "bedrock"
-        return "unknown"
-
-    def _calculate_cost(self, provider: str, prompt_tokens: int, completion_tokens: int) -> float:
-        r"""Calculate cost in USD based on provider and token counts.
-
-        Pricing as of 2024 (approximate):
-        - gpt-4o-mini: \$0.15/1M input, \$0.60/1M output
-        - claude-3-haiku: \$0.25/1M input, \$1.25/1M output
-        """
-        if provider == "openai":
-            return (prompt_tokens * 0.15 + completion_tokens * 0.60) / 1_000_000
-        elif provider == "anthropic":
-            return (prompt_tokens * 0.25 + completion_tokens * 1.25) / 1_000_000
-        return 0.0
+        await self._cache.set(
+            cache_key,
+            {
+                "content": result.content,
+                "model": result.model,
+                "provider": result.provider,
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens,
+                "cost_usd": result.cost_usd,
+            },
+        )
+        return result
