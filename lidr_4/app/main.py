@@ -1,14 +1,14 @@
 """Punto de entrada de la aplicación FastAPI.
 
-        # /health NO depende de la configuración: el servicio arranca aunque falte la
-        # API key y lo dice en la respuesta (`llm_configured: false`). Un health check
-        # tiene que sobrevivir a la avería que está diagnosticando; si exige la key al
-        # arrancar, muere antes que el problema y el orquestador ve un crashloop sin
-        # forma de distinguir "falta un secreto" de "el código está roto".
-        #
-        # Lo mismo aplica al lifespan: crea el cliente de caché, pero NO el cliente
-        # LLM. El Router se construye perezoso en WU5, y fallar acá si falta una key
-        # reproduciría exactamente el bug que este diseño evita.
+# /health NO depende de la configuración: el servicio arranca aunque falte la
+# API key y lo dice en la respuesta (`llm_configured: false`). Un health check
+# tiene que sobrevivir a la avería que está diagnosticando; si exige la key al
+# arrancar, muere antes que el problema y el orquestador ve un crashloop sin
+# forma de distinguir "falta un secreto" de "el código está roto".
+#
+# Lo mismo aplica al lifespan: crea el cliente de caché, pero NO el cliente
+# LLM. El Router se construye perezoso en WU5, y fallar acá si falta una key
+# reproduciría exactamente el bug que este diseño evita.
 
 No hay middleware CORS a propósito: no existe frontend que llame a esta API
 desde un navegador, y CORS es una protección del navegador. Se agrega solo

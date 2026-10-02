@@ -178,9 +178,35 @@ def test_scope_renders_rates_and_rounding_from_yaml() -> None:
     # Rounding bases from YAML
     assert "5h" in scope
     assert "50 EUR" in scope
+    # Person-week and costs up (not "to the nearest")
+    assert "one person-week" in scope
+    assert "costs up to the nearest" in scope
     # Ensure no raw float like "62.5" or "50.0" appears in scope
     assert "62.5 EUR/hour" not in scope
     assert "50.0 EUR/hour" not in scope
+
+
+def test_narrative_uses_proper_case_and_blank_lines() -> None:
+    """Narrative output must use proper case for phase names and separate
+    paragraphs with a blank line (double newline), no extra blank line before
+    Total effort."""
+    request = _make_request_fmt(OutputFormat.NARRATIVE)
+    system, _ = render_estimation_prompt(request)
+
+    # Extract the examples section
+    ex_match = re.search(r"<examples>.*?</examples>", system, re.DOTALL)
+    assert ex_match, "<examples> block not found"
+    examples = ex_match.group(0)
+
+    # Phase names must use proper case, not lower()
+    assert "The QA phase" in examples
+    assert "The Design phase" in examples
+
+    # Paragraphs separated by exactly one blank line (double newline)
+    assert "\n\nThe Design phase" in examples
+
+    # No double blank line before Total effort
+    assert "\n\n\nTotal effort" not in examples
 
 
 def test_system_prompt_starts_without_leading_newline() -> None:
@@ -217,8 +243,8 @@ def test_examples_each_row_on_own_line() -> None:
         for line in system.splitlines()
         if line.startswith("| ") and not line.startswith("| phase") and not line.startswith("|---")
     ]
-    # Should have one line per phase per example (3 examples × 5 phases = 15)
-    assert len(table_lines) == 15, f"Expected 15 phase rows, got {len(table_lines)}"
+    # Should have one line per phase per example (4 examples × 5 phases = 20)
+    assert len(table_lines) == 20, f"Expected 20 phase rows, got {len(table_lines)}"
     # Each row should be a complete line (not concatenated)
     for line in table_lines:
         assert line.count("|") == 5, f"Row not well-formed: {line}"
@@ -237,8 +263,8 @@ def test_examples_each_row_on_own_line() -> None:
     narrative_lines = [
         line for line in system.splitlines() if line.startswith("The ") and "phase spans" in line
     ]
-    assert len(narrative_lines) == 15, (
-        f"Expected 15 narrative paragraphs, got {len(narrative_lines)}"
+    assert len(narrative_lines) == 20, (
+        f"Expected 20 narrative paragraphs, got {len(narrative_lines)}"
     )
 
 
@@ -297,6 +323,9 @@ def version_temporal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loader, "_BASE_DIR", tmp_path)
     monkeypatch.setattr(loader._env, "loader", FileSystemLoader(tmp_path))
+    # Two caches to clear: raw YAML (_load_raw_yaml) and computed data
+    # (_compute_version_data). Both must be cleared to isolate tests that
+    # write a different examples.yaml for the same version name.
     loader._compute_version_data.cache_clear()
     loader._load_raw_yaml.cache_clear()
 
@@ -365,6 +394,7 @@ def test_team_summary_uses_labels_and_plurals_from_yaml() -> None:
         "Team: 2 Developers, 1 Designer, 1 QA",
         "Team: 4 Developers, 2 Designers, 1 PM, 2 QAs",
         "Team: 2 Developers, 1 Designer, 1 QA",
+        "Team: 3 Developers, 1 Designer, 1 QA",
     ]
 
 

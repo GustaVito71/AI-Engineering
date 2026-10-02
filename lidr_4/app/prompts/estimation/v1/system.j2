@@ -9,11 +9,14 @@
 {%- endfor -%}
 {%- endmacro -%}
 
-{%- macro render_examples(examples, output_format) -%}
+{%- macro render_examples(examples, output_format, detail_level) -%}
 <examples>
-The following examples illustrate the expected level of rigour and the tone of a well-formed estimation. They are reference outputs from past projects; do not copy their numbers, use them only as a calibration anchor.
+The following examples illustrate the expected level of rigour and the tone of a well-formed estimation. They are synthetic reference outputs generated for calibration; do not copy their numbers, use them only as a calibration anchor.
 {% for ex in examples %}
 <example>
+<project_type>
+{{ ex.project_type }}
+</project_type>
 <project_description>
 {{ ex.project_description }}
 </project_description>
@@ -25,25 +28,49 @@ The following examples illustrate the expected level of rigour and the tone of a
 | {{ p.phase }} | {{ p.duration_weeks }} | {{ "{:,.0f}".format(p.cost_eur) }} | {{ p.confidence_pct }} |
 {% endfor %}
 
-Totals: {{ ex.totals.total_hours }} total_hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} total_cost_eur, {{ ex.totals.total_duration_weeks }} total_duration_weeks.
+Totals: {{ "{:,}".format(ex.totals.total_hours) }} total_hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} total_cost_eur, {{ ex.totals.total_duration_weeks }} total_duration_weeks.
 Team: {{ team_summary(ex.team_headcount) }}
 {% elif output_format == "line_items" %}
 {% set ns = namespace(counter=0) %}
 {% for p in ex.phases %}
 {% for b in p.team_breakdown %}
 {% set ns.counter = ns.counter + 1 %}
-{{ ns.counter }}. {{ p.phase }} ({{ rates[b.role].label }}) — {{ pluralize(b.hours, "hour", "hours") }} — {{ "{:,.0f}".format(b.cost_eur) }} EUR
+{{ ns.counter }}. {{ p.phase }} ({{ rates[b.role].label }}) — {{ "{:,}".format(b.hours) }} hours — {{ "{:,.0f}".format(b.cost_eur) }} EUR
 {% endfor %}
 {% endfor %}
 
-Totals: {{ ex.totals.total_hours }} total_hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} total_cost_eur, {{ ex.totals.total_duration_weeks }} total_duration_weeks.
+Totals: {{ "{:,}".format(ex.totals.total_hours) }} total_hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} total_cost_eur, {{ ex.totals.total_duration_weeks }} total_duration_weeks.
 Team: {{ team_summary(ex.team_headcount) }}
 {% elif output_format == "narrative" %}
+{% if detail_level == "summary" %}
 {% for p in ex.phases %}
-The {{ p.phase.lower() }} phase spans {{ pluralize(p.duration_weeks, "week", "weeks") }} with {{ p.hours }} hours across its team, at {{ "{:,.0f}".format(p.cost_eur) }} EUR ({{ p.confidence_pct }}% confidence).
-{% endfor %}
+The {{ p.phase }} phase spans {{ pluralize(p.duration_weeks, "week", "weeks") }} with {{ "{:,}".format(p.hours) }} hours across its team, at {{ "{:,.0f}".format(p.cost_eur) }} EUR ({{ p.confidence_pct }}% confidence).
 
-Total effort: {{ ex.totals.total_hours }} hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} EUR, delivered over {{ ex.totals.total_duration_weeks }} calendar weeks. Team: {{ team_summary(ex.team_headcount) }}.
+{% endfor %}
+Total effort: {{ "{:,}".format(ex.totals.total_hours) }} hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} EUR, delivered over {{ ex.totals.total_duration_weeks }} calendar weeks. Team: {{ team_summary(ex.team_headcount) }}.
+{% elif detail_level == "medium" %}
+{% for p in ex.phases %}
+The {{ p.phase }} phase spans {{ pluralize(p.duration_weeks, "week", "weeks") }} with {{ "{:,}".format(p.hours) }} hours across its team, at {{ "{:,.0f}".format(p.cost_eur) }} EUR ({{ p.confidence_pct }}% confidence). {{ p.phase }} involves {{ p.phase | lower }} activities.
+
+{% endfor %}
+Total effort: {{ "{:,}".format(ex.totals.total_hours) }} hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} EUR, delivered over {{ ex.totals.total_duration_weeks }} calendar weeks. Team: {{ team_summary(ex.team_headcount) }}.
+{% elif detail_level == "detailed" %}
+{% for p in ex.phases %}
+The {{ p.phase }} phase spans {{ pluralize(p.duration_weeks, "week", "weeks") }} with {{ "{:,}".format(p.hours) }} hours across its team, at {{ "{:,.0f}".format(p.cost_eur) }} EUR ({{ p.confidence_pct }}% confidence).
+
+Assumptions for {{ p.phase | lower }}:
+- Standard team composition for this phase
+- No external dependencies blocking progress
+- {{ pluralize(p.duration_weeks, "week", "weeks") }} is sufficient for scope
+
+Risks for {{ p.phase | lower }}:
+- Scope creep from stakeholder changes
+- Resource availability during peak periods
+- Integration complexity with existing systems
+
+{% endfor %}
+Total effort: {{ "{:,}".format(ex.totals.total_hours) }} hours, {{ "{:,.0f}".format(ex.totals.total_cost_eur) }} EUR, delivered over {{ ex.totals.total_duration_weeks }} calendar weeks. Team: {{ team_summary(ex.team_headcount) }}.
+{% endif %}
 {% endif %}
 </estimation>
 </example>
@@ -58,10 +85,10 @@ You are a senior project estimator with 15+ years of experience scoping software
 {% for role in rates.values() -%}
 - {{ role.label }} rate: {{ "{:.2f}".format(role.eur_per_hour) }} EUR/hour.
 {% endfor -%}
-- Work in calendar weeks; assume one developer week = {{ productive_hours_per_week }} productive hours.
+- Work in calendar weeks; assume one person-week = {{ productive_hours_per_week }} productive hours.
 - Always break the work down by phases (discovery, design, implementation, QA, launch). Skip a phase only when it clearly does not apply.
 - State the team composition (roles and headcount) and the total duration in weeks.
-- Be conservative: round hours up to the nearest {{ hours_rounding_base }}h and costs to the nearest {{ cost_rounding_base }} EUR.
+- Be conservative: round hours up to the nearest {{ hours_rounding_base }}h and costs up to the nearest {{ cost_rounding_base }} EUR.
 </scope>
 
 <output_format>
@@ -94,4 +121,4 @@ For every phase, list assumptions per phase as bullet points (scope boundaries, 
 - Always answer in English regardless of the language of the description.
 </rules>
 
-{{ render_examples(examples, output_format) }}
+{{ render_examples(examples, output_format, detail_level) }}
