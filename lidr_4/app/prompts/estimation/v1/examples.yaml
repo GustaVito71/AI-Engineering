@@ -1,12 +1,14 @@
-# Example data for prompt version v1.
-# Stored per-version so published prompts are immutable.
-# Loader reads this file; changing it creates a new version, not a silent edit.
+# Datos de ejemplo de la versión v1 del prompt.
+# Se guardan por versión para que los prompts publicados sean inmutables.
+# El loader lee este archivo: cambiar sus datos implica una versión nueva, no
+# una edición silenciosa.
 
-# Roles: single source of truth for rates AND for how each role is displayed.
-# - label / plural: presentation, used by system.j2 (<scope>, line items, team summary).
-# - eur_per_hour: used by the loader's arithmetic.
-# The order of this map is the order in which roles appear in <scope> and in
-# the team summary. Adding a role here is enough: no Python change needed.
+# Roles: única fuente de verdad para las tarifas Y para cómo se muestra cada rol.
+# - label / plural: presentación, los usa system.j2 (<scope>, elementos de línea
+#   y resumen de equipo).
+# - eur_per_hour: lo usa la aritmética del loader.
+# El orden de este mapa es el orden en que aparecen los roles en <scope> y en el
+# resumen de equipo. Basta con agregar un rol acá: no hace falta tocar Python.
 rates:
   developer:
     label: Developer
@@ -25,17 +27,18 @@ rates:
     plural: QAs
     eur_per_hour: 62.50
 
-# Rounding rules (used in <scope> and in the loader's arithmetic).
+# Reglas de redondeo (se usan en <scope> y en la aritmética del loader).
 rounding:
   hours_base: 5
   cost_base: 50
 
-# Productive hours per person-week (used in <scope> and in the loader's arithmetic).
+# Horas productivas por persona-semana (se usan en <scope> y en la aritmética del loader).
 productive_hours_per_week: 32
 
-# Examples: each has project_type + project_description + phases with team composition.
-# Hours, costs, totals and team headcount are COMPUTED by the loader.
-# How they are displayed is decided by system.j2.
+# Ejemplos: cada uno tiene project_type, project_description y fases con la
+# composición del equipo.
+# Horas, costes, totales y dotación del equipo los CALCULA el loader.
+# Cómo se muestran lo decide system.j2.
 examples:
   - project_type: web_saas
     project_description: >-
