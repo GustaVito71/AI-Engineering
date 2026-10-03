@@ -115,8 +115,9 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y con acierto de caché; el prompt nunca va al log.
 - `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con el prompt, entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
 - `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 si falta la clave del primario (sin filtrar la clave configurada), estimación con aviso si falta la del respaldo, `/health` con y sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log.
+- `test/test_logging.py` — los loggers de LiteLLM: con `LOG_LEVEL=DEBUG` quedan en `WARNING` y una estimación completa no deja la descripción del cliente en la salida; sus advertencias salen una sola vez, con el formato de structlog, y sin claves de API.
 
-Los tests no dependen del `.env` de quien los corre: fijan las variables que usan en el entorno, que tiene prioridad sobre el `.env`.
+Los tests no dependen del `.env` ni de las variables de entorno de quien los corre: `test/conftest.py` los aísla y cada test fija lo que usa. Los que dependen del proveedor corren dos veces, con OpenAI y con Anthropic como primario.
 
 ## Estructura del proyecto
 
@@ -207,12 +208,12 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `LLM_TIMEOUT` | `30.0` | Segundos por llamada al proveedor |
 | `LLM_MAX_RETRIES` | `2` | Reintentos del Router antes de pasar al respaldo |
 | `LLM_MAX_TOKENS` | `4000` | Tope de tokens de la respuesta |
-| `PROMPT_VERSION` | `v1` | Versión de prompt. Es el mecanismo de invalidación del caché semántico |
+| `PROMPT_VERSION` | `v1` | Versión de la plantilla de prompt. Hoy no invalida la caché (su clave ya incluye el prompt completo); con el caché semántico de WU10 será su mecanismo de invalidación |
 | `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada |
 | `CACHE_TTL` | `86400` | Segundos |
 | `DESCRIPCION_MIN_CHARS` / `DESCRIPCION_MAX_CHARS` | `20` / `2000` | Techo del operador; solo puede estrechar el contrato |
 | `APP_ENV` | `local` | Se muestra en `/health` |
-| `LOG_LEVEL` | `INFO` | Nivel de los logs propios. Las librerías HTTP y del SDK quedan fijas en `WARNING` |
+| `LOG_LEVEL` | `INFO` | Nivel de los logs propios. Las librerías HTTP, el SDK y LiteLLM quedan fijas en `WARNING`: ningún nivel escribe el prompt |
 | `APP_PORT` | `8001` | Puerto de `python -m app` |
 | `ESTIMATOR_API_BASE_URL` | `http://localhost:8001` | Lo lee el cliente Streamlit |
 

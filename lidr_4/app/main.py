@@ -29,6 +29,12 @@ from .routers.estimations import router as estimations_router
 from .services.cache import crear_estimation_cache
 from .services.llm_wrapper import aviso_sin_respaldo
 
+# Loggers propios de LiteLLM (los nombres llevan mayúsculas y espacios). En DEBUG
+# escriben los parámetros completos de cada llamada, incluidos los mensajes: el
+# prompt del sistema y la descripción del cliente. Se fijan en WARNING igual que
+# los de transporte HTTP, y eso también pisa lo que pida LITELLM_LOG.
+LOGGERS_DE_LITELLM = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
+
 
 def configure_logging(level: str = "INFO") -> None:
     """structlog como API de logging, stdlib como backend.
@@ -76,8 +82,44 @@ def configure_logging(level: str = "INFO") -> None:
     # the pinned parent. Pinning individual children such as "httpcore.http11"
     # silently fails the moment a transport library is renamed, because an
     # unlisted child of a NOTSET logger falls back to the DEBUG root level.
-    for noisy in ("httpx", "httpcore", "httpcore2", "openai", "aiohttp", "h11"):
+    for noisy in (
+        "httpx",
+        "httpcore",
+        "httpcore2",
+        "openai",
+        "aiohttp",
+        "h11",
+        *LOGGERS_DE_LITELLM,
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    _unificar_loggers_de_litellm()
+
+
+def _unificar_loggers_de_litellm() -> None:
+    """Que los mensajes de LiteLLM salgan una sola vez, con el formato de structlog.
+
+    LiteLLM instala su propio handler en sus loggers y además deja que los
+    mensajes sigan hasta la raíz, así que cada advertencia salía dos veces: una
+    con su formato y otra con el de structlog. Se quita su handler y queda solo
+    el de la raíz.
+
+    Ese handler lleva los filtros que borran las claves de API de los mensajes,
+    y un filtro de handler solo actúa en ese handler: quitarlo a secas dejaría
+    pasar las claves a la raíz. Por eso antes se copian sus filtros a los
+    loggers de LiteLLM (incluidos los hijos, como "LiteLLM Proxy.stdout"), que
+    los aplican a cada mensaje antes de que llegue a cualquier handler.
+
+    Se puede llamar más de una vez: la segunda ya no encuentra handlers.
+    """
+    raices = [logging.getLogger(nombre) for nombre in LOGGERS_DE_LITELLM]
+    filtros = [f for logger in raices for handler in logger.handlers for f in handler.filters]
+    for nombre in list(logging.root.manager.loggerDict):
+        if any(nombre == r or nombre.startswith(f"{r}.") for r in LOGGERS_DE_LITELLM):
+            for filtro in filtros:
+                logging.getLogger(nombre).addFilter(filtro)  # addFilter no duplica
+    for logger in raices:
+        logger.handlers.clear()
 
 
 @asynccontextmanager

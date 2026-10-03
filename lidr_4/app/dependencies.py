@@ -27,15 +27,6 @@ def get_llm_wrapper(request: Request) -> LLMWrapper:
         cache = getattr(state, "estimation_cache", None) or crear_estimation_cache(
             None, settings.cache_ttl
         )
-        wrapper = LLMWrapper(
-            openai_api_key=settings.openai_api_key,
-            anthropic_api_key=settings.anthropic_api_key,
-            primary_model=settings.primary_model,
-            fallback_model=settings.fallback_model,
-            timeout=settings.llm_timeout,
-            num_retries=settings.llm_max_retries,
-            model_group=settings.llm_model_group,
-            cache=cache,
-        )
+        wrapper = LLMWrapper(settings=settings, cache=cache)
         state.llm_wrapper = wrapper
     return wrapper

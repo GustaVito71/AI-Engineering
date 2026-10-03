@@ -4,7 +4,8 @@ Heredada de lidr_3, con los cambios que impone LiteLLM. Los tres principios
 del original se conservan intactos:
 
 1. Las API keys son opcionales en la construcción (`SecretStr | None`) y se
-   exigen en el punto de uso (`require_api_key()`). Si la validación ocurre al
+   exigen en el punto de uso: al construir el wrapper LLM, en la primera
+   request que lo necesita (ver app/dependencies.py). Si la validación ocurre al
    importar el módulo, el proceso muere ANTES de que exista la aplicación:
    no hay /health, no hay /docs, no hay nada que le diga al orquestador qué
    falta. Un health check tiene que sobrevivir a la avería que diagnostica.
@@ -20,22 +21,26 @@ del original se conservan intactos:
 QUÉ CAMBIÓ RESPECTO DE LIDR_3 Y POR QUÉ
 
 - Desaparecen `LLM_PROVIDER` y `LLM_FALLBACK`. Ya no hay un switch de
-  proveedor: LiteLLM `Router` recibe dos deployments bajo el mismo
-  `model_name` y decide el failover. Escribir el retry a mano sería tener dos
-  dueños de la misma decisión.
+  proveedor: el `Router` de LiteLLM recibe un deployment por modelo (el
+  primario y, si tiene clave, el de respaldo) y decide el failover. Escribir
+  el retry a mano sería tener dos dueños de la misma decisión.
 
 - El provider se deriva del prefijo del MODELO ("openai/gpt-4o-mini" ->
   "openai") en vez de declararse aparte. Ojo con la diferencia respecto de la
   referencia session_3, que adivina el provider del NOMBRE del modelo con
   `startswith("claude")`. Acá no se adivina nada: se parsea configuración que
-  el operador escribió explícitamente. La inferencia sobre qué deployment
-  *respondió* sigue sin usarse, y esa se resuelve en WU5 con
+  el operador escribió explícitamente. Qué deployment *respondió* no se
+  infiere del nombre: el wrapper lo lee de
   `response._hidden_params["model_id"]`.
 
-- `PROMPT_VERSION` es obligatoria y no decorativa. La clave del caché
-  semántico embebe solo la consulta del usuario, NO el prompt: sin esta
-  variable, cambiar la plantilla dejaría sirviendo respuestas viejas en
-  silencio. Es el mecanismo de invalidación, no metadata.
+- `PROMPT_VERSION` es obligatoria y no decorativa: elige la plantilla
+  (prompts/estimation/vN/) y viaja en cada respuesta y en cada evento de
+  trazabilidad. Hoy NO invalida la caché, ni hace falta: la caché es
+  exact-match y su clave es un hash del prompt completo ya renderizado, así
+  que cualquier cambio de plantilla produce otra clave. Con el caché semántico
+  de WU10 la clave embeberá solo la consulta del usuario, y entonces esta
+  variable pasará a ser el mecanismo de invalidación: sin ella, cambiar la
+  plantilla seguiría sirviendo respuestas viejas en silencio.
 """
 
 from functools import lru_cache
@@ -119,9 +124,8 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
 
-    # --- LiteLLM. Dos deployments bajo un mismo model_name; el Router
-    # decide el failover. Ver el docstring del módulo.
-    llm_model_group: str = "estimator"
+    # --- LiteLLM. Un deployment por modelo; el Router decide el failover.
+    # Ver el docstring del módulo.
     primary_model: str = "openai/gpt-4o-mini"
     fallback_model: str = "anthropic/claude-haiku-4-5"
 
@@ -132,7 +136,8 @@ class Settings(BaseSettings):
     # equivalente, y un max_tokens corto produce JSON truncado.
     llm_max_tokens: int = 4000
 
-    # --- Capa 2. Ver el docstring: es el mecanismo de invalidación de caché.
+    # --- Capa 2. Qué plantilla se usa. Ver el docstring sobre su relación
+    # con la caché.
     prompt_version: str = "v1"
 
     # --- Caché. REDIS_URL vacío = caché desactivado, sin tocar código.
@@ -179,7 +184,6 @@ class Settings(BaseSettings):
         # el vacío en un BeforeValidator, que corre antes de validar el dominio.
         if not self.prompt_version:
             raise ValueError("PROMPT_VERSION no puede estar vacío")
-        self.llm_model_group = self.llm_model_group or "estimator"
         return self
 
     @model_validator(mode="after")
@@ -271,26 +275,6 @@ class Settings(BaseSettings):
             return None
         raw = getattr(self, f"{provider}_api_key", None)
         return raw.get_secret_value() if raw else None
-
-    def require_api_key(self, provider: str | None = None) -> str:
-        """La key del provider indicado, exigida en el punto de uso.
-
-        Se llama justo antes de construir el cliente LLM, nunca al importar:
-        el proceso tiene que sobrevivir al problema que diagnostica.
-        """
-        provider = provider or self.primary_provider
-        variable = VARIABLE_DE_API_KEY.get(provider)
-        if variable is None:
-            raise LLMConfigurationError(
-                f"Proveedor desconocido: '{provider}'. "
-                f"Prefijos admitidos: {', '.join(sorted(VARIABLE_DE_API_KEY))}"
-            )
-        key = self.active_api_key(provider)
-        if not key:
-            raise LLMConfigurationError(
-                f"Falta {variable} para el deployment con modelo '{provider}'"
-            )
-        return key
 
 
 @lru_cache

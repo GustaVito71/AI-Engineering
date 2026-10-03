@@ -1,23 +1,25 @@
-"""Streamlit frontend for the Estimador service (lidr_4 deliverable).
+"""Frontend Streamlit del servicio Estimador (entrega de lidr_4).
 
-The UI is a thin, single-request client: fill a typed form, get an estimate
-back as free text. It never touches a provider API key; the backend reads its
-own keys from Settings (.env). The frontend only needs the base URL of the
-running API (`ESTIMATOR_API_BASE_URL`, default http://localhost:8001).
+La interfaz es un cliente liviano de una sola petición: se completa un
+formulario tipado y se recibe una estimación en texto libre. Nunca toca una API
+key de proveedor; el backend lee sus propias claves de Settings (.env). El
+frontend solo necesita la URL base de la API en ejecución
+(`ESTIMATOR_API_BASE_URL`, por defecto http://localhost:8001).
 
-Why single-shot: there is no conversation to remember. Each submission is an
-independent `POST /api/v1/estimate`, so keeping a multi-turn history on screen
-would imply continuity that does not exist.
+Por qué una sola petición: no hay una conversación que recordar. Cada envío es
+un `POST /api/v1/estimate` independiente, así que mantener en pantalla un
+historial de varios turnos sugeriría una continuidad que no existe.
 
-Why the form and not a chat: the request is a typed contract
-(`description` + three enums), not prose. A form makes that contract visible
-to the user and lets the browser validate lengths before spending a token.
+Por qué un formulario y no un chat: la petición es un contrato tipado
+(`description` + tres enums), no prosa libre. El formulario hace visible ese
+contrato al usuario y permite que el navegador valide las longitudes antes de
+gastar un token.
 
-Why the HTTP call is a pure function: `_estimar` is testable without a running
-Streamlit runtime. The contract test in test/test_frontend.py feeds it a mocked
-HTTP transport. The Streamlit calls live only inside `main()`, which Streamlit
-runs as __main__; importing the module from pytest defines the pure functions
-and does nothing else.
+Por qué la llamada HTTP es una función pura: `_estimar` se puede probar sin un
+runtime de Streamlit en marcha. El test de contrato de test/test_frontend.py le
+pasa un transporte HTTP simulado. Las llamadas a Streamlit viven solo dentro de
+`main()`, que Streamlit ejecuta como __main__; importar el módulo desde pytest
+define las funciones puras y nada más.
 """
 
 from __future__ import annotations
@@ -29,7 +31,11 @@ import streamlit as st
 
 DEFAULT_API_BASE = os.environ.get("ESTIMATOR_API_BASE_URL", "http://localhost:8001")
 
-# The 422 errors raised by `EstimationRequest` before the prompt even runs.
+# Límites de longitud de la descripción, copiados del contrato de la API
+# (`EstimationRequest`: 20 a 2000 caracteres). El formulario los usa para cortar
+# el texto en el máximo y avisar si no llega al mínimo, sin esperar a que la API
+# responda 422. Están copiados y no importados porque el frontend es un cliente
+# aparte que no depende del paquete `app`.
 DESCRIPTION_MIN_CHARS = 20
 DESCRIPTION_MAX_CHARS = 2000
 
@@ -54,7 +60,7 @@ OUTPUT_FORMATS = {
 
 
 class _ApiError(Exception):
-    """The backend answered with a non-200 status."""
+    """El backend respondió con un código de estado distinto de 200."""
 
     def __init__(self, status: int, detail: object) -> None:
         super().__init__(str(detail))
@@ -63,7 +69,12 @@ class _ApiError(Exception):
 
 
 def _detail_texto(detail: object) -> str:
-    """FastAPI validation errors arrive as a list of `{msg, ...}` items."""
+    """Convierte el `detail` de una respuesta de error en texto legible.
+
+    En los errores de validación (422), FastAPI manda `detail` como una lista de
+    objetos `{msg, ...}`: se toma el `msg` de cada uno, en una línea por error.
+    En el resto de los errores `detail` ya es un texto y se devuelve tal cual.
+    """
     if isinstance(detail, list):
         return "\n".join(str(item.get("msg", item)) for item in detail)
     return str(detail)
@@ -140,8 +151,8 @@ def main() -> None:
         f"Describí el proyecto entre {DESCRIPTION_MIN_CHARS} y {DESCRIPTION_MAX_CHARS} caracteres."
     )
 
-    # Single-shot: the previous result is replaced, not appended to. There is no
-    # conversation state because there is no conversation.
+    # Una sola estimación en pantalla: cada resultado nuevo reemplaza al anterior
+    # en vez de sumarse debajo. No se guarda historial porque no hay conversación.
     resultado = st.session_state.get("resultado")
 
     if resultado:

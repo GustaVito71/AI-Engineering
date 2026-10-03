@@ -1,19 +1,20 @@
-"""Jinja2 loader for versioned prompt templates.
+"""Loader Jinja2 de plantillas de prompt versionadas.
 
-The on-disk layout is ``app/prompts/<use_case>/<version>/<role>.j2``. Versioning
-is required from day one: switching prompts becomes a string change at the
-call site (``version="v2"``), not a code refactor.
+La estructura en disco es ``app/prompts/<use_case>/<version>/<role>.j2``. El
+versionado es obligatorio desde el primer día: cambiar de prompt es cambiar un
+string en el punto de llamada (``version="v2"``), no refactorizar código.
 
-Each version has an ``examples.yaml`` with its own roles (rate + display
-labels), rounding rules and example data. Published prompts are immutable:
-changing behavior means a new version dir.
+Cada versión tiene su propio ``examples.yaml`` con sus roles (tarifa y etiquetas
+de presentación), reglas de redondeo y datos de ejemplo. Los prompts publicados
+son inmutables: cambiar el comportamiento implica un directorio de versión nuevo.
 
-Division of responsibilities:
-- ``examples.yaml``: the data (roles, rates, labels, rounding, examples).
-- ``loader.py``: generic arithmetic only (hours, costs, totals, headcount).
-  It never decides how anything is displayed, so a new version can change
-  the presentation without touching Python.
-- ``system.j2``: all presentation (labels, plurals, team summary, layout).
+Reparto de responsabilidades:
+- ``examples.yaml``: los datos (roles, tarifas, etiquetas, redondeo, ejemplos).
+- ``loader.py``: solo aritmética genérica (horas, costes, totales, dotación).
+  Nunca decide cómo se muestra nada, así que una versión nueva puede cambiar
+  la presentación sin tocar Python.
+- ``system.j2``: toda la presentación (etiquetas, plurales, resumen de equipo,
+  maquetación).
 """
 
 from __future__ import annotations
@@ -30,18 +31,19 @@ from app.schemas.estimation import EstimationRequest
 
 _BASE_DIR = Path(__file__).resolve().parent
 
-# Fields every role in `rates` must declare. `label`/`plural` are consumed by
-# the template, `eur_per_hour` by the arithmetic below. Validated at load time
-# so a malformed YAML fails on the first request, not halfway through a render.
+# Campos que todo rol de `rates` tiene que declarar. `label`/`plural` los usa la
+# plantilla, y `eur_per_hour` la aritmética de abajo. Se validan al cargar el
+# YAML, para que uno mal formado falle en la primera request y no a mitad de un
+# render.
 _ROLE_FIELDS = ("label", "plural", "eur_per_hour")
 
 
 def _round_up(n: float, base: int) -> int:
-    """Round up to the nearest multiple of base. Works with floats."""
+    """Redondea hacia arriba al múltiplo de `base` más cercano. Acepta floats."""
     return int(ceil(n / base) * base)
 
 
-# Cache raw YAML data per version
+# Caché del YAML sin procesar, por versión.
 @lru_cache(maxsize=8)
 def _load_raw_yaml(version: str) -> dict:
     yaml_path = _BASE_DIR / "estimation" / version / "examples.yaml"
@@ -53,7 +55,7 @@ def _load_raw_yaml(version: str) -> dict:
 
 
 def _validate(data: dict, version: str) -> None:
-    """Fail fast on a malformed examples.yaml, naming what is missing."""
+    """Falla rápido ante un examples.yaml mal formado, nombrando lo que falta."""
     rates = data["rates"]
     for role, spec in rates.items():
         missing = [f for f in _ROLE_FIELDS if f not in (spec or {})]
@@ -74,10 +76,10 @@ def _validate(data: dict, version: str) -> None:
 
 @lru_cache(maxsize=8)
 def _compute_version_data(version: str) -> dict:
-    """Read examples.yaml once per version and do all the arithmetic.
+    """Lee examples.yaml una vez por versión y hace toda la aritmética.
 
-    Cached: the YAML is read and the numbers computed once per process.
-    Callers go through `_load_version_data`, which hands out a copy.
+    Cacheada: el YAML se lee y los números se calculan una sola vez por proceso.
+    Quien la necesite pasa por `_load_version_data`, que entrega una copia.
     """
     data = _load_raw_yaml(version)
     _validate(data, version)
@@ -114,9 +116,9 @@ def _compute_version_data(version: str) -> dict:
                 }
             )
 
-        # Peak headcount per role across phases, in the order roles are
-        # declared in `rates`. Pure aggregation: the template decides how to
-        # display it (labels, plurals, separators).
+        # Dotación máxima de cada rol entre todas las fases, en el orden en que
+        # se declaran los roles en `rates`. Es solo agregación: cómo se muestra
+        # (etiquetas, plurales, separadores) lo decide la plantilla.
         team_headcount = {
             role: max(p.get("team", {}).get(role, 0) for p in ex["phases"]) for role in rates
         }
@@ -145,13 +147,13 @@ def _compute_version_data(version: str) -> dict:
 
 
 def _load_version_data(version: str) -> dict:
-    """Computed data for a version, as a copy so callers can't mutate the cache.
+    """Datos calculados de una versión, como copia para que nadie modifique la caché.
 
-    Returns a dict with keys:
+    Devuelve un dict con las claves:
     - rates: {role: {label, plural, eur_per_hour}}
     - rounding: {hours_base, cost_base}
     - productive_hours_per_week: int
-    - examples: list of computed examples (phases with hours, cost_eur,
+    - examples: lista de ejemplos calculados (fases con hours, cost_eur y
       team_breakdown; totals; team_headcount)
     """
     return deepcopy(_compute_version_data(version))
@@ -171,11 +173,11 @@ def render_estimation_prompt(
     request: EstimationRequest,
     version: str = "v1",
 ) -> tuple[str, str]:
-    """Render the system and user prompts for the estimation use case.
+    """Renderiza los prompts de sistema y de usuario para el caso de estimación.
 
-    Returns:
-        A tuple ``(system_prompt, user_prompt)`` ready to be sent to the LLM
-        as separate ``role: "system"`` and ``role: "user"`` messages.
+    Devuelve:
+        Una tupla ``(system_prompt, user_prompt)`` lista para enviar al LLM
+        como mensajes separados ``role: "system"`` y ``role: "user"``.
     """
     version_data = _load_version_data(version)
 
