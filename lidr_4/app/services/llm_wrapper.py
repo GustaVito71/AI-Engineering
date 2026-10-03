@@ -12,7 +12,12 @@ from typing import Any
 
 from litellm import Router, completion_cost
 
-from app.config import LLMConfigurationError, get_settings
+from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, get_settings
+
+
+def _variable_de_clave(provider: str) -> str:
+    """'openai' -> 'OPENAI_API_KEY'. Un provider sin variable conocida se nombra tal cual."""
+    return VARIABLE_DE_API_KEY.get(provider, f"API key for provider '{provider}'")
 
 
 @dataclass
@@ -63,14 +68,16 @@ class LLMWrapper:
         primary_key = settings.active_api_key(primary_provider)
         fallback_key = settings.active_api_key(fallback_provider) if fallback_model else None
 
+        # El mensaje nombra la variable de entorno: es lo que el operador tiene
+        # que tocar, y llega tal cual al cliente en el 503 (ver app/main.py).
         if not primary_key:
             raise LLMConfigurationError(
-                f"Missing API key for primary model {primary_model} (provider: {primary_provider})"
+                f"Missing {_variable_de_clave(primary_provider)} for primary model {primary_model}"
             )
         if fallback_model and not fallback_key:
             raise LLMConfigurationError(
-                f"Missing API key for fallback model {fallback_model} "
-                f"(provider: {fallback_model.split('/', 1)[0] if '/' in fallback_model else 'openai'})"
+                f"Missing {_variable_de_clave(fallback_provider)} "
+                f"for fallback model {fallback_model}"
             )
 
         # Build deployments for the Router
