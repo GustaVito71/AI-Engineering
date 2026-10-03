@@ -82,12 +82,12 @@ def _con_mock(wrapper: LLMWrapper, **extra) -> list[dict]:
 
 
 def test_missing_primary_key_raises_config_error(monkeypatch) -> None:
-    with pytest.raises(LLMConfigurationError, match="primary model"):
+    with pytest.raises(LLMConfigurationError, match="OPENAI_API_KEY.*modelo primario"):
         _construir(monkeypatch, ANTHROPIC_API_KEY="sk-anthropic")
 
 
 def test_missing_fallback_key_raises_config_error(monkeypatch) -> None:
-    with pytest.raises(LLMConfigurationError, match="fallback model"):
+    with pytest.raises(LLMConfigurationError, match="ANTHROPIC_API_KEY.*modelo de respaldo"):
         _construir(monkeypatch, OPENAI_API_KEY="sk-openai")
 
 
