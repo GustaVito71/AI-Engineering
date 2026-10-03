@@ -65,23 +65,25 @@ def configure_logging(level: str = "INFO") -> None:
     root.handlers = [handler]
     root.setLevel(level)
 
-    # Third-party loggers are pinned to WARNING on purpose.
+    # Los loggers de terceros se fijan en WARNING a propósito.
     #
-    # HTTP transport libraries (httpx, and the httpcore family) log full
-    # request/response HEADERS at DEBUG, which is how account identifiers
-    # (`openai-organization`) and Cloudflare `set-cookie` session values end up
-    # written to the log file. The openai SDK adds its own request/response
-    # trace lines at DEBUG for the same reason. None of that is the user's call:
-    # only this project's own structlog events should follow LOG_LEVEL.
+    # Las librerías de transporte HTTP (httpx y la familia httpcore) escriben en
+    # DEBUG los HEADERS completos de cada request y response. Por ahí terminan en
+    # el log identificadores de cuenta (`openai-organization`) y valores de sesión
+    # de Cloudflare (`set-cookie`). El SDK de openai agrega en DEBUG sus propias
+    # trazas de request y response. Nada de eso debe depender de LOG_LEVEL: solo
+    # los eventos structlog propios del proyecto siguen esa variable.
     #
-    # WARNING and above still pass through, so genuine third-party warnings and
-    # errors are preserved -- only the verbosity dump is suppressed.
+    # WARNING y lo que está por encima siguen pasando, así que las advertencias y
+    # los errores reales de terceros se conservan: solo se corta el volcado
+    # detallado.
     #
-    # NOTE: pin the top-level namespace, not its children. Child loggers created
-    # later (lazily, by a library that has not been imported yet) inherit from
-    # the pinned parent. Pinning individual children such as "httpcore.http11"
-    # silently fails the moment a transport library is renamed, because an
-    # unlisted child of a NOTSET logger falls back to the DEBUG root level.
+    # OJO: se fija el espacio de nombres de primer nivel, no sus hijos. Los
+    # loggers hijos que se crean después (cuando se importa una librería que
+    # todavía no se cargó) heredan el nivel del padre fijado. Fijar hijos sueltos
+    # como "httpcore.http11" deja de funcionar, sin aviso, en cuanto una librería
+    # de transporte cambia de nombre: un hijo no listado de un logger NOTSET toma
+    # el nivel DEBUG de la raíz.
     for noisy in (
         "httpx",
         "httpcore",

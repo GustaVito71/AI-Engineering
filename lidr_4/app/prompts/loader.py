@@ -51,7 +51,7 @@ def _load_raw_yaml(version: str) -> dict:
         with yaml_path.open(encoding="utf-8") as f:
             return yaml.safe_load(f)
     except FileNotFoundError as e:
-        raise TemplateNotFound(f"examples.yaml for version {version}") from e
+        raise TemplateNotFound(f"No existe examples.yaml para la versión {version}") from e
 
 
 def _validate(data: dict, version: str) -> None:
@@ -61,16 +61,16 @@ def _validate(data: dict, version: str) -> None:
         missing = [f for f in _ROLE_FIELDS if f not in (spec or {})]
         if missing:
             raise ValueError(
-                f"Role '{role}' in estimation/{version}/examples.yaml is missing "
-                f"{', '.join(missing)}. Every role needs: {', '.join(_ROLE_FIELDS)}."
+                f"Al rol '{role}' de estimation/{version}/examples.yaml le falta "
+                f"{', '.join(missing)}. Todo rol necesita: {', '.join(_ROLE_FIELDS)}."
             )
     for ex in data["examples"]:
         for p in ex["phases"]:
             for role in p.get("team", {}):
                 if role not in rates:
                     raise ValueError(
-                        f"Role '{role}' in example '{ex['project_description'][:40]}...' "
-                        f"not defined in rates. Available: {list(rates)}"
+                        f"El rol '{role}' del ejemplo '{ex['project_description'][:40]}...' "
+                        f"no está definido en rates. Roles disponibles: {list(rates)}"
                     )
 
 
