@@ -333,8 +333,8 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
 | ~~**WU3**~~ | ~~Dominio con los totales calculados en código~~ **Revertido**: el modelo calcula. `app/domain/` borrado. Ver §3.4 | — |
 | ~~**WU4**~~ | `app/prompts/estimation/v1/{system.j2,user.j2,examples.yaml}` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")`. Ejemplos como datos, maquetados por `output_format`; roles, tarifas y redondeo en el YAML. 19 tests. **Cerrado** | Resuelto |
-| **WU5** | Gateway async: `Router`, dispatch, tracing, pre-arranque. Coste con `completion_cost()`. Devuelve `text: str` sin parsear | Medio |
-| ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. 9 tests con transporte mockeado. **Cerrado** (sin probar contra la API real hasta WU5) | Resuelto |
+| ~~**WU5**~~ | Gateway async: `Router` con primario y respaldo, claves por proveedor, coste con `completion_cost()`, provider vía `_hidden_params["model_id"]`. Caché exact-match fail soft sobre un único cliente de Redis. Errores 503 (falta clave), 502 y 504 con mensaje limpio. Trazabilidad con `estimacion_completada` / `estimacion_fallida`. Devuelve `text: str` sin parsear. 34 tests (wrapper, caché, endpoint). **Cerrado** | Resuelto |
+| ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. 9 tests con transporte mockeado. **Cerrado** (todavía sin probar contra la API real) | Resuelto |
 | **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
 | **WU8** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
 | **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |

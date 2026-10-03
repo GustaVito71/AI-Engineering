@@ -1,4 +1,5 @@
-"""Tests del LLMWrapper: claves, Router, respaldo, resultado, configuración y coste.
+"""Tests del LLMWrapper: claves, Router, respaldo, resultado, configuración, coste
+y trazabilidad.
 
 Sin red: el Router de LiteLLM acepta `mock_response` (respuesta simulada) y
 `mock_testing_fallbacks` (simula la caída del primario para probar el respaldo).
@@ -9,6 +10,7 @@ Settings, igual que haría el servicio al arrancar.
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from app.config import LLMConfigurationError, get_settings
 from app.services import llm_wrapper as W
@@ -29,6 +31,22 @@ class _CacheVacia:
 
     async def set(self, *_):
         pass
+
+
+class _CacheMemoria:
+    """Caché en memoria que sí guarda: la segunda llamada igual es un acierto."""
+
+    def __init__(self) -> None:
+        self.datos: dict[str, dict] = {}
+
+    def make_key(self, system_prompt, user_prompt):
+        return f"{system_prompt}|{user_prompt}"
+
+    async def get(self, key):
+        return self.datos.get(key)
+
+    async def set(self, key, value):
+        self.datos[key] = value
 
 
 def _construir(monkeypatch, **entorno: str) -> LLMWrapper:
@@ -161,3 +179,73 @@ async def test_cost_zero_on_exception(wrapper, monkeypatch) -> None:
     monkeypatch.setattr(W, "completion_cost", explota)
     res = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
     assert res.cost_usd == 0.0
+
+
+# --- Trazabilidad ---------------------------------------------------------------
+
+
+def _eventos(logs: list[dict]) -> list[dict]:
+    return [e for e in logs if e["event"] == "estimacion_completada"]
+
+
+async def test_tracing_records_a_normal_call(wrapper) -> None:
+    _con_mock(wrapper, mock_response="ok")
+    with capture_logs() as logs:
+        res = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
+
+    [evento] = _eventos(logs)
+    assert evento["log_level"] == "info"
+    assert evento["modelo"] == PRIMARIO
+    assert evento["proveedor"] == "openai"
+    assert evento["uso_respaldo"] is False
+    assert evento["desde_cache"] is False
+    assert evento["tokens_prompt"] == res.prompt_tokens > 0
+    assert evento["tokens_completion"] == res.completion_tokens > 0
+    assert evento["coste_usd"] == res.cost_usd > 0
+    assert evento["coste_evitado_usd"] == 0.0
+    assert evento["latencia_ms"] >= 0
+    assert evento["prompt_version"] == "v1"
+
+
+async def test_tracing_flags_the_fallback(wrapper) -> None:
+    _con_mock(wrapper, mock_testing_fallbacks=True, mock_response="ok")
+    with capture_logs() as logs:
+        await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
+
+    [evento] = _eventos(logs)
+    assert evento["modelo"] == RESPALDO
+    assert evento["proveedor"] == "anthropic"
+    assert evento["uso_respaldo"] is True
+
+
+async def test_tracing_on_cache_hit_reports_avoided_cost(wrapper) -> None:
+    wrapper._cache = _CacheMemoria()
+    vistos = _con_mock(wrapper, mock_response="ok")
+
+    primera = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
+    with capture_logs() as logs:
+        segunda = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
+
+    assert len(vistos) == 1  # la segunda no llamó al proveedor
+    assert primera.cached is False
+    assert segunda.cached is True
+    [evento] = _eventos(logs)
+    assert evento["desde_cache"] is True
+    assert evento["coste_usd"] == 0.0
+    assert evento["coste_evitado_usd"] == primera.cost_usd > 0
+
+
+async def test_tracing_never_logs_the_prompt(wrapper) -> None:
+    """El evento lleva métricas, no contenido: la descripción del cliente no va al log."""
+    _con_mock(wrapper, mock_response="ok")
+    with capture_logs() as logs:
+        await wrapper.estimate(
+            system_prompt="SYSTEM-SECRETO",
+            user_prompt="DESCRIPCION-DEL-CLIENTE",
+            prompt_version="v1",
+        )
+
+    [evento] = _eventos(logs)
+    volcado = repr(evento)
+    assert "SYSTEM-SECRETO" not in volcado
+    assert "DESCRIPCION-DEL-CLIENTE" not in volcado
