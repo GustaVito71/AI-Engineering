@@ -41,10 +41,22 @@ def _cliente(transport: httpx.MockTransport) -> httpx.Client:
 def test_devuelve_text_y_prompt_version():
     transport = _mock_transport(cuerpo={"text": "3 fases, 8 semanas", "prompt_version": "v1"})
 
-    texto, version = _estimar("http://api:8001", PAYLOAD_VALIDO, _cliente(transport))
+    texto, version, avisos = _estimar("http://api:8001", PAYLOAD_VALIDO, _cliente(transport))
 
     assert texto == "3 fases, 8 semanas"
     assert version == "v1"
+    assert avisos == []  # una API sin el campo `avisos` sigue funcionando
+
+
+def test_devuelve_los_avisos_de_la_api():
+    aviso = "El modelo de respaldo no está disponible porque falta ANTHROPIC_API_KEY."
+    transport = _mock_transport(
+        cuerpo={"text": "3 fases, 8 semanas", "prompt_version": "v1", "avisos": [aviso]}
+    )
+
+    _texto, _version, avisos = _estimar("http://api:8001", PAYLOAD_VALIDO, _cliente(transport))
+
+    assert avisos == [aviso]
 
 
 def test_el_endpoint_es_estimate_y_no_stream():

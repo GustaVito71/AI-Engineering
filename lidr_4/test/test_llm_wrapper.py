@@ -51,8 +51,10 @@ class _CacheMemoria:
 
 def _construir(monkeypatch, **entorno: str) -> LLMWrapper:
     """Fija el entorno, reconstruye Settings y crea el wrapper como en dependencies.py."""
+    # Vacías y no borradas: una variable de entorno vacía tiene prioridad sobre
+    # el .env del proyecto, así el test no depende de las claves de quien lo corre.
     for variable in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
-        monkeypatch.delenv(variable, raising=False)
+        monkeypatch.setenv(variable, "")
     for variable, valor in entorno.items():
         monkeypatch.setenv(variable, valor)
     get_settings.cache_clear()
@@ -104,9 +106,38 @@ def test_missing_primary_key_raises_config_error(monkeypatch) -> None:
         _construir(monkeypatch, ANTHROPIC_API_KEY="sk-anthropic")
 
 
-def test_missing_fallback_key_raises_config_error(monkeypatch) -> None:
-    with pytest.raises(LLMConfigurationError, match="ANTHROPIC_API_KEY.*modelo de respaldo"):
-        _construir(monkeypatch, OPENAI_API_KEY="sk-openai")
+def test_missing_fallback_key_starts_without_fallback(monkeypatch) -> None:
+    """Sin la clave del respaldo el wrapper arranca solo con el primario, lo deja
+    en el log y guarda el aviso para el usuario."""
+    with capture_logs() as logs:
+        w = _construir(
+            monkeypatch,
+            OPENAI_API_KEY="sk-openai",
+            PRIMARY_MODEL=PRIMARIO,
+            FALLBACK_MODEL=RESPALDO,
+        )
+
+    modelos = [d["litellm_params"]["model"] for d in w._router.model_list]
+    assert modelos == [PRIMARIO]
+    assert not w._router.fallbacks
+    [aviso] = w.avisos
+    assert "ANTHROPIC_API_KEY" in aviso
+    assert RESPALDO in aviso
+    [evento] = [e for e in logs if e["event"] == "respaldo_no_disponible"]
+    assert evento["log_level"] == "warning"
+    assert evento["modelo_respaldo"] == RESPALDO
+
+
+async def test_estimates_work_without_fallback_key(monkeypatch) -> None:
+    w = _construir(monkeypatch, OPENAI_API_KEY="sk-openai", PRIMARY_MODEL=PRIMARIO)
+    _con_mock(w, mock_response="ok")
+    res = await w.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
+    assert res.content == "ok"
+    assert res.model == PRIMARIO
+
+
+def test_no_notices_when_both_keys_are_set(wrapper) -> None:
+    assert wrapper.avisos == ()
 
 
 def test_each_deployment_gets_its_provider_key(wrapper) -> None:

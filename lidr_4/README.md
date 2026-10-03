@@ -35,7 +35,10 @@ uv run python -m app --reload   # con recarga
 
 `python -m app` usa `APP_PORT` de Settings. `uvicorn app.main:app` a secas usa el 8000, que suele estar tomado. El servicio queda en `http://localhost:8001` (Swagger en `/docs`, health en `/health`).
 
-El servicio arranca aunque falten las API keys: `/health` lo informa con `llm_configured: false` y `POST /api/v1/estimate` responde 503 nombrando la variable que falta. Con la configuración por defecto hacen falta las dos claves, `OPENAI_API_KEY` (primario) y `ANTHROPIC_API_KEY` (respaldo).
+El servicio arranca aunque falten las API keys. Con la configuración por defecto:
+
+- **Sin `OPENAI_API_KEY`** (primario) no hay estimaciones: `/health` informa `llm_configured: false` y `POST /api/v1/estimate` responde 503 nombrando la variable.
+- **Sin `ANTHROPIC_API_KEY`** (respaldo) las estimaciones funcionan solo con el primario. Se avisa en tres lugares: el log (evento `respaldo_no_disponible`), `/health` (`fallback_configured: false` y `avisos`) y cada respuesta del endpoint (`avisos`), que Streamlit muestra encima de la estimación.
 
 Redis es opcional: con `REDIS_URL` vacío la caché queda desactivada, y si Redis no responde el servicio sigue sin caché (fail soft).
 
@@ -57,7 +60,8 @@ Respuesta:
 ```json
 {
   "text": "| phase | duration_weeks | cost_eur | confidence_pct | …",
-  "prompt_version": "v1"
+  "prompt_version": "v1",
+  "avisos": []
 }
 ```
 
@@ -66,7 +70,7 @@ Errores posibles:
 | Código | Cuándo | `detail` |
 |---|---|---|
 | 422 | La entrada no cumple el contrato (longitud de `description`, valores de los enums) | Lista de errores de validación de Pydantic |
-| 503 | Falta una API key | Nombra la variable, por ejemplo *"Falta OPENAI_API_KEY para el modelo primario openai/gpt-4o-mini."* |
+| 503 | Falta la API key del modelo primario | Nombra la variable, por ejemplo *"Falta OPENAI_API_KEY para el modelo primario openai/gpt-4o-mini."* |
 | 504 | El proveedor no respondió a tiempo (agotados los reintentos y el respaldo) | Mensaje genérico en español |
 | 502 | Cualquier otro fallo del proveedor | Mensaje genérico en español |
 
@@ -100,17 +104,19 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Ejemplos:** horas y costes calculados desde las tarifas y redondeados (5 h / 50 €), totales que cuadran con las fases, una fila por línea en los tres formatos, numeración de `line_items` desde 1 en cada ejemplo, resumen de equipo armado con los `label`/`plural` del YAML.
   - **Validación del YAML** (con una versión temporal en `tmp_path`): rol no declarado en `rates` → error; rol sin `label` → error; un rol nuevo aparece en `<scope>`, partidas y resumen sin tocar Python.
   - **Caché:** el YAML se lee y se calcula una sola vez por versión, y cada llamada recibe su propia copia.
-- `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, y un 422 de FastAPI llega como lista de `msg`.
+- `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `avisos` de la respuesta llegan al cliente (vacíos si la API no los envía).
 
 - `test/test_llm_wrapper.py` — el wrapper LLM:
-  - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario o la del respaldo, `LLMConfigurationError` nombrando la variable.
+  - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `avisos`.
   - **Router y respaldo:** el Router tiene los dos modelos, y si el primario falla responde el de respaldo.
   - **Resultado:** `model` es el nombre del modelo (no el id interno del deployment), `provider` coincide, se respeta `prompt_version` y el coste se calcula.
   - **Configuración:** reintentos, timeout y `max_tokens` salen de `Settings`.
   - **Coste:** si `completion_cost` falla, el coste es 0 y la respuesta sale igual.
   - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y con acierto de caché; el prompt nunca va al log.
 - `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con el prompt, entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
-- `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 por clave faltante (sin filtrar la clave configurada), `/health` sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log.
+- `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 si falta la clave del primario (sin filtrar la clave configurada), estimación con aviso si falta la del respaldo, `/health` con y sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log.
+
+Los tests no dependen del `.env` de quien los corre: fijan las variables que usan en el entorno, que tiene prioridad sobre el `.env`.
 
 ## Estructura del proyecto
 
@@ -174,7 +180,7 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 
 ## Llamada al LLM, caché y trazabilidad
 
-**Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave.
+**Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave. Si falta la clave del respaldo, el Router se arma solo con el primario y cada respuesta lleva el aviso en `avisos`.
 
 **Caché exact-match.** Antes de llamar al proveedor se busca la respuesta en Redis. La clave es un hash del system prompt y el user prompt completos, así que cambiar la plantilla invalida la caché sola. Hay un único cliente de Redis, el que crea el lifespan (`app/cache.py`), y es el que se cierra al apagar. Si Redis está caído, lento o tiene una entrada corrupta, la estimación sale igual sin caché (fail soft, con timeouts de 1 s).
 
@@ -184,6 +190,7 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 |---|---|---|
 | `estimacion_completada` | `info` | `modelo`, `proveedor`, `uso_respaldo`, `desde_cache`, `tokens_prompt`, `tokens_completion`, `coste_usd`, `coste_evitado_usd`, `latencia_ms`, `prompt_version` |
 | `estimacion_fallida` | `error` | `codigo_http` (502/504), `tipo_error`, `detalle` (el mensaje real del proveedor) |
+| `respaldo_no_disponible` | `warning` | `modelo_respaldo`, `detalle` (el mismo aviso que recibe el usuario). Se emite una vez, al construir el wrapper |
 
 `coste_usd` es lo que costó esa request: con acierto de caché vale 0 y lo que costó la respuesta original va a `coste_evitado_usd`. `uso_respaldo` marca las respuestas del modelo de respaldo, que pueden costar bastante más que el primario (PLAN.md §7). Los eventos llevan métricas, nunca el texto del prompt ni la descripción del cliente.
 
