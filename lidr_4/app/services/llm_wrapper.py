@@ -13,17 +13,13 @@ from typing import Any
 
 from litellm import Router, completion_cost
 
-from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, Settings, get_settings
+from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, Settings, provider_de_modelo
 from app.tracing import emitir
 
 
 def _variable_de_clave(provider: str) -> str:
     """'openai' -> 'OPENAI_API_KEY'. Un provider sin variable conocida se nombra tal cual."""
     return VARIABLE_DE_API_KEY.get(provider, f"la API key del proveedor '{provider}'")
-
-
-def _provider_de(model: str) -> str:
-    return model.split("/", 1)[0] if "/" in model else "openai"
 
 
 def aviso_sin_respaldo(settings: Settings) -> str | None:
@@ -33,10 +29,9 @@ def aviso_sin_respaldo(settings: Settings) -> str | None:
     pierde la protección ante una caída del proveedor. Lo usan el wrapper (que
     lo devuelve en cada estimación) y /health, para que los dos digan lo mismo.
     """
+    # Settings garantiza que FALLBACK_MODEL nunca está vacío (aplicar_defaults).
     fallback_model = settings.fallback_model
-    if not fallback_model:
-        return None
-    provider = _provider_de(fallback_model)
+    provider = settings.fallback_provider
     if settings.active_api_key(provider):
         return None
     return (
@@ -64,33 +59,21 @@ class LLMCallResult:
 class LLMWrapper:
     """Wrapper alrededor del LiteLLM Router con fallback y tracking de coste."""
 
-    def __init__(
-        self,
-        *,
-        openai_api_key: str | None,
-        anthropic_api_key: str | None,
-        primary_model: str,
-        fallback_model: str | None,
-        timeout: float,
-        num_retries: int,
-        model_group: str,
-        cache: Any,  # EstimationCache
-    ) -> None:
-        self._cache = cache
-        self._primary_model = primary_model
-        self._fallback_model = fallback_model
-        self._timeout = timeout
-        self._num_retries = num_retries
-        self._model_group = model_group
+    def __init__(self, *, settings: Settings, cache: Any) -> None:
+        """Arma el Router con la configuración de `settings`.
 
-        settings = get_settings()
+        `cache` es una EstimationCache (o la caché nula si Redis está
+        desactivado): ver app/services/cache.py.
+        """
+        self._cache = cache
+        primary_model = settings.primary_model
+        fallback_model = settings.fallback_model
+        self._primary_model = primary_model
 
         # Cada deployment recibe la clave de su propio proveedor.
-        primary_provider = _provider_de(primary_model)
+        primary_provider = settings.primary_provider
         primary_key = settings.active_api_key(primary_provider)
-        fallback_key = (
-            settings.active_api_key(_provider_de(fallback_model)) if fallback_model else None
-        )
+        fallback_key = settings.active_api_key(settings.fallback_provider)
 
         # Sin la clave del primario no hay servicio: el mensaje nombra la
         # variable y llega tal cual al cliente en el 503 (ver app/main.py).
@@ -122,7 +105,7 @@ class LLMWrapper:
                 "litellm_params": {"model": primary_model, "api_key": primary_key},
             },
         ]
-        if fallback_model and fallback_key:
+        if fallback_key:
             deployments.append(
                 {
                     "model_name": fallback_model,
@@ -132,11 +115,9 @@ class LLMWrapper:
 
         self._router = Router(
             model_list=deployments,
-            fallbacks=[{primary_model: [fallback_model]}]
-            if fallback_model and fallback_key
-            else [],
-            num_retries=num_retries,
-            timeout=timeout,
+            fallbacks=[{primary_model: [fallback_model]}] if fallback_key else [],
+            num_retries=settings.llm_max_retries,
+            timeout=settings.llm_timeout,
         )
 
         # El Router asigna a cada deployment un id interno (un hash) y lo devuelve
@@ -190,7 +171,7 @@ class LLMWrapper:
         # Qué deployment respondió (primario o respaldo), traducido a su nombre.
         deployment_id = (getattr(response, "_hidden_params", None) or {}).get("model_id")
         model = self._modelo_por_id.get(deployment_id, response.model)
-        provider = model.split("/", 1)[0] if "/" in model else "unknown"
+        provider = provider_de_modelo(model)
 
         usage = response.usage
         prompt_tokens = usage.prompt_tokens if usage else 0

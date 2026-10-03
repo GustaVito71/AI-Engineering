@@ -114,18 +114,8 @@ async def test_estimate_works_with_redis_down(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
     get_settings.cache_clear()
-    s = get_settings()
     cliente = await _cliente_caido()
-    wrapper = LLMWrapper(
-        openai_api_key=s.openai_api_key,
-        anthropic_api_key=s.anthropic_api_key,
-        primary_model=s.primary_model,
-        fallback_model=s.fallback_model,
-        timeout=s.llm_timeout,
-        num_retries=s.llm_max_retries,
-        model_group=s.llm_model_group,
-        cache=crear_estimation_cache(cliente, ttl=60),
-    )
+    wrapper = LLMWrapper(settings=get_settings(), cache=crear_estimation_cache(cliente, ttl=60))
     original = wrapper._router.acompletion
 
     async def sin_red(**kwargs):

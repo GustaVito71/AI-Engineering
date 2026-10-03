@@ -3,6 +3,10 @@
 Sin red ni Redis: REDIS_URL vacío desactiva la caché. Los casos de 503 usan el
 wrapper real (sin la clave que falta ni siquiera llega a construirse); los de
 200, 502 y 504 reemplazan el wrapper con `dependency_overrides`.
+
+El `.env` de quien corre los tests no interviene (ver `entorno_aislado` en
+conftest.py), y los tests de claves corren con cada proveedor como primario
+(fixture `modelos`).
 """
 
 from __future__ import annotations
@@ -32,11 +36,9 @@ DETALLE_INTERNO = "org-ACME-1234: upstream said no (request_id=abc)"
 
 @pytest.fixture
 def cliente(monkeypatch):
-    """App real con el entorno que fije cada test; las claves arrancan vacías."""
+    """App real con el entorno que fije cada test; sin claves ni `.env` de partida."""
 
     def _crear(**entorno: str) -> TestClient:
-        for variable in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
-            monkeypatch.setenv(variable, "")
         monkeypatch.setenv("REDIS_URL", "")
         for variable, valor in entorno.items():
             monkeypatch.setenv(variable, valor)
@@ -110,23 +112,34 @@ def test_returns_200_with_text_and_prompt_version(cliente) -> None:
 # --- Falta configuración: 503 ---------------------------------------------------
 
 
-def test_missing_primary_key_returns_503_naming_the_variable(cliente) -> None:
-    with cliente(ANTHROPIC_API_KEY="sk-ant-secreta") as c:
+def _entorno(modelos, **claves_por_rol: str) -> dict[str, str]:
+    """Modelos fijados más las claves pedidas por rol ("primario"/"respaldo")."""
+    (primario, var_primario, _), (respaldo, var_respaldo, _) = modelos
+    variables = {"primario": var_primario, "respaldo": var_respaldo}
+    entorno = {"PRIMARY_MODEL": primario, "FALLBACK_MODEL": respaldo}
+    entorno.update({variables[rol]: valor for rol, valor in claves_por_rol.items()})
+    return entorno
+
+
+def test_missing_primary_key_returns_503_naming_the_variable(cliente, modelos) -> None:
+    (_, var_primario, _), _ = modelos
+    with cliente(**_entorno(modelos, respaldo="sk-respaldo")) as c:
         r = c.post("/api/v1/estimate", json=BODY)
     assert r.status_code == 503
-    assert "Falta OPENAI_API_KEY" in r.json()["detail"]
+    assert f"Falta {var_primario}" in r.json()["detail"]
 
 
-def test_503_never_leaks_the_configured_key(cliente) -> None:
-    with cliente(ANTHROPIC_API_KEY="sk-ant-secreta") as c:
+def test_503_never_leaks_the_configured_key(cliente, modelos) -> None:
+    with cliente(**_entorno(modelos, respaldo="sk-respaldo-secreta")) as c:
         r = c.post("/api/v1/estimate", json=BODY)
     assert r.status_code == 503
-    assert "sk-ant-secreta" not in r.text
+    assert "sk-respaldo-secreta" not in r.text
 
 
-def test_missing_fallback_key_still_estimates_and_warns(cliente, monkeypatch) -> None:
+def test_missing_fallback_key_still_estimates_and_warns(cliente, monkeypatch, modelos) -> None:
     """Sin la clave del respaldo la estimación sale con el primario, y la
     respuesta trae el aviso para el usuario."""
+    _, (_, var_respaldo, _) = modelos
 
     async def sin_red(self, **kwargs):
         return await litellm.acompletion(
@@ -134,14 +147,14 @@ def test_missing_fallback_key_still_estimates_and_warns(cliente, monkeypatch) ->
         )
 
     monkeypatch.setattr(litellm.Router, "acompletion", sin_red)
-    with cliente(OPENAI_API_KEY="sk-openai-secreta") as c:
+    with cliente(**_entorno(modelos, primario="sk-primario-secreta")) as c:
         r = c.post("/api/v1/estimate", json=BODY)
     assert r.status_code == 200
     cuerpo = r.json()
     assert cuerpo["text"] == "estimación"
     [aviso] = cuerpo["avisos"]
-    assert "ANTHROPIC_API_KEY" in aviso
-    assert "sk-openai-secreta" not in r.text
+    assert var_respaldo in aviso
+    assert "sk-primario-secreta" not in r.text
 
 
 def test_avisos_reach_the_response(cliente) -> None:
@@ -150,17 +163,24 @@ def test_avisos_reach_the_response(cliente) -> None:
     assert r.json()["avisos"] == ["aviso de prueba"]
 
 
-def test_health_reports_missing_fallback(cliente) -> None:
-    with cliente(OPENAI_API_KEY="sk-openai") as c:
+def test_health_reports_missing_fallback(cliente, modelos) -> None:
+    _, (_, var_respaldo, _) = modelos
+    with cliente(**_entorno(modelos, primario="sk-primario")) as c:
         h = c.get("/health").json()
     assert h["llm_configured"] is True
     assert h["fallback_configured"] is False
     [aviso] = h["avisos"]
-    assert "ANTHROPIC_API_KEY" in aviso
+    assert var_respaldo in aviso
 
 
-def test_health_without_notices_when_both_keys_are_set(cliente) -> None:
-    with cliente(OPENAI_API_KEY="sk-openai", ANTHROPIC_API_KEY="sk-ant") as c:
+def test_health_reports_missing_primary(cliente, modelos) -> None:
+    with cliente(**_entorno(modelos, respaldo="sk-respaldo")) as c:
+        h = c.get("/health").json()
+    assert h["llm_configured"] is False
+
+
+def test_health_without_notices_when_both_keys_are_set(cliente, modelos) -> None:
+    with cliente(**_entorno(modelos, primario="sk-p", respaldo="sk-r")) as c:
         h = c.get("/health").json()
     assert h["llm_configured"] is True
     assert h["fallback_configured"] is True
