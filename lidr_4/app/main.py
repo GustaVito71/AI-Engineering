@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI
 from .cache import cerrar_cliente_cache, crear_cliente_cache
 from .config import Settings, get_settings
 from .routers.estimations import router as estimations_router
+from .services.cache import crear_estimation_cache
 
 
 def configure_logging(level: str = "INFO") -> None:
@@ -81,11 +82,13 @@ def configure_logging(level: str = "INFO") -> None:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
-    # El cliente de Redis vive en app.state y lo consume el router por
-    # dependency. Se cierra en el `finally` para que el pool de conexiones no
-    # quede abierto si el arranque falla a mitad o si hay un shutdown abrupto.
+    # Único cliente de Redis de la app. La caché de estimaciones se arma sobre
+    # él y el wrapper LLM la toma de app.state (ver app/dependencies.py). Se
+    # cierra en el `finally` para que el pool de conexiones no quede abierto si
+    # el arranque falla a mitad o si hay un shutdown abrupto.
     cliente = await crear_cliente_cache(settings)
     app.state.cache_client = cliente
+    app.state.estimation_cache = crear_estimation_cache(cliente, settings.cache_ttl)
     try:
         yield
     finally:
