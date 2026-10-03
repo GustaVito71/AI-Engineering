@@ -20,10 +20,11 @@ import logging
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from .cache import cerrar_cliente_cache, crear_cliente_cache
-from .config import Settings, get_settings
+from .config import LLMConfigurationError, Settings, get_settings
 from .routers.estimations import router as estimations_router
 from .services.cache import crear_estimation_cache
 
@@ -107,6 +108,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.include_router(estimations_router)
+
+    @app.exception_handler(LLMConfigurationError)
+    async def llm_no_configurado(_request: Request, exc: LLMConfigurationError) -> JSONResponse:
+        # Falta configuración local (una API key), no falló el proveedor: 503
+        # "servicio no disponible" con el nombre de la variable, en vez de un
+        # 500 genérico que obliga a leer el traceback. El mensaje lo arma el
+        # wrapper y no contiene secretos, solo el nombre de la variable.
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.get("/")
     def root() -> dict[str, str]:
