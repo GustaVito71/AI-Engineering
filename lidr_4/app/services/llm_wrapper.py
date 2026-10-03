@@ -17,7 +17,7 @@ from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, get_settings
 
 def _variable_de_clave(provider: str) -> str:
     """'openai' -> 'OPENAI_API_KEY'. Un provider sin variable conocida se nombra tal cual."""
-    return VARIABLE_DE_API_KEY.get(provider, f"API key for provider '{provider}'")
+    return VARIABLE_DE_API_KEY.get(provider, f"la API key del proveedor '{provider}'")
 
 
 @dataclass
@@ -57,7 +57,7 @@ class LLMWrapper:
 
         settings = get_settings()
 
-        # Resolve API keys using Settings.active_api_key
+        # Cada deployment recibe la clave de su propio proveedor.
         primary_provider = primary_model.split("/", 1)[0] if "/" in primary_model else "openai"
         fallback_provider = (
             (fallback_model or "").split("/", 1)[0]
@@ -72,15 +72,16 @@ class LLMWrapper:
         # que tocar, y llega tal cual al cliente en el 503 (ver app/main.py).
         if not primary_key:
             raise LLMConfigurationError(
-                f"Missing {_variable_de_clave(primary_provider)} for primary model {primary_model}"
+                f"Falta {_variable_de_clave(primary_provider)} "
+                f"para el modelo primario {primary_model}."
             )
         if fallback_model and not fallback_key:
             raise LLMConfigurationError(
-                f"Missing {_variable_de_clave(fallback_provider)} "
-                f"for fallback model {fallback_model}"
+                f"Falta {_variable_de_clave(fallback_provider)} "
+                f"para el modelo de respaldo {fallback_model}."
             )
 
-        # Build deployments for the Router
+        # Deployments del Router: el primario y, si hay, el de respaldo.
         deployments = [
             {
                 "model_name": primary_model,
@@ -119,7 +120,7 @@ class LLMWrapper:
         max_tokens: int | None = None,
     ) -> LLMCallResult:
         """Ejecuta la estimación con fallback automático y cache."""
-        # Check cache first
+        # Primero la caché: un acierto evita la llamada al proveedor.
         cache_key = self._cache.make_key(system_prompt, user_prompt)
         cached = await self._cache.get(cache_key)
         if cached:
