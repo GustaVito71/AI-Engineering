@@ -79,3 +79,10 @@ class EstimationRequest(BaseModel):
 class EstimationResponse(BaseModel):
     text: str
     prompt_version: str
+    # Avisos para el usuario sobre cómo se generó la estimación (por ejemplo,
+    # que el modelo de respaldo no está disponible). Lista vacía si no hay
+    # ninguno: los clientes que no conocen el campo pueden ignorarlo.
+    avisos: list[str] = Field(
+        default_factory=list,
+        description="Avisos para el usuario. Vacío si no hay ninguno.",
+    )

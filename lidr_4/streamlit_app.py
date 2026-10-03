@@ -73,15 +73,16 @@ def _estimar(
     api_base: str,
     payload: dict,
     client: httpx.Client | None = None,
-) -> tuple[str, str]:
-    """POST the typed payload to `/api/v1/estimate` and return `(text, prompt_version)`.
+) -> tuple[str, str, list[str]]:
+    """Envía el formulario a `/api/v1/estimate` y devuelve `(text, prompt_version, avisos)`.
 
-    The response contract is `{text: str, prompt_version: str}` — free text, no
-    structure to parse, so nothing here walks the body beyond those two keys.
-    A non-200 raises `_ApiError` carrying the real HTTP status and the parsed
-    `detail` (FastAPI's 422 arrives as a list of `{msg, ...}` items, which
-    `_detail_texto` flattens). `client` is injected by tests
-    (httpx.MockTransport); the UI always lets the function create its own.
+    El contrato de respuesta es `{text, prompt_version, avisos}`: texto libre,
+    sin estructura que parsear. `avisos` puede faltar si la API es anterior a
+    ese campo, y entonces se toma como lista vacía. Una respuesta distinta de
+    200 lanza `_ApiError` con el código HTTP real y el `detail` parseado (el
+    422 de FastAPI llega como lista de `{msg, ...}`, que `_detail_texto`
+    aplana). `client` lo inyectan los tests (httpx.MockTransport); la UI deja
+    que la función cree el suyo.
     """
     propio = client is None
     cliente = client if client is not None else httpx.Client()
@@ -98,7 +99,7 @@ def _estimar(
                 detail = respuesta.text
             raise _ApiError(respuesta.status_code, detail)
         cuerpo = respuesta.json()
-        return cuerpo["text"], cuerpo["prompt_version"]
+        return cuerpo["text"], cuerpo["prompt_version"], list(cuerpo.get("avisos") or [])
     finally:
         if propio:
             cliente.close()
@@ -123,8 +124,12 @@ def main() -> None:
             )
             if not health.get("llm_configured"):
                 st.sidebar.warning(
-                    "Poné OPENAI_API_KEY o ANTHROPIC_API_KEY en el .env del backend."
+                    "Falta la API key del modelo primario en el .env del backend: "
+                    "no se pueden generar estimaciones."
                 )
+            # Avisos que no impiden estimar (por ejemplo, respaldo no disponible).
+            for aviso in health.get("avisos") or []:
+                st.sidebar.warning(aviso)
         except httpx.HTTPError:
             st.sidebar.error(
                 f"No se pudo conectar a {api_base}. Levantá la API con:\n\n`uv run python -m app`"
@@ -140,6 +145,9 @@ def main() -> None:
     resultado = st.session_state.get("resultado")
 
     if resultado:
+        # Los avisos van antes del texto: condicionan cómo leer la estimación.
+        for aviso in resultado.get("avisos") or []:
+            st.warning(aviso)
         st.markdown(resultado["text"])
         st.caption(f"Prompt: {resultado['prompt_version']}")
         if st.button("🧹 Nueva estimación"):
@@ -196,7 +204,7 @@ def main() -> None:
         "output_format": output_format,
     }
     try:
-        texto, prompt_version = _estimar(api_base, payload)
+        texto, prompt_version, avisos = _estimar(api_base, payload)
     except _ApiError as exc:
         st.error(_detail_texto(exc.detail))
         return
@@ -204,7 +212,11 @@ def main() -> None:
         st.error(f"No se pudo conectar a {api_base}. Levantá la API con:\n\n`uv run python -m app`")
         return
 
-    st.session_state["resultado"] = {"text": texto, "prompt_version": prompt_version}
+    st.session_state["resultado"] = {
+        "text": texto,
+        "prompt_version": prompt_version,
+        "avisos": avisos,
+    }
     st.rerun()
 
 

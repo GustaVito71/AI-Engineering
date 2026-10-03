@@ -13,13 +13,37 @@ from typing import Any
 
 from litellm import Router, completion_cost
 
-from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, get_settings
+from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, Settings, get_settings
 from app.tracing import emitir
 
 
 def _variable_de_clave(provider: str) -> str:
     """'openai' -> 'OPENAI_API_KEY'. Un provider sin variable conocida se nombra tal cual."""
     return VARIABLE_DE_API_KEY.get(provider, f"la API key del proveedor '{provider}'")
+
+
+def _provider_de(model: str) -> str:
+    return model.split("/", 1)[0] if "/" in model else "openai"
+
+
+def aviso_sin_respaldo(settings: Settings) -> str | None:
+    """Aviso para el usuario si el modelo de respaldo no tiene API key, o None.
+
+    Sin la clave del respaldo el servicio funciona igual con el primario, pero
+    pierde la protección ante una caída del proveedor. Lo usan el wrapper (que
+    lo devuelve en cada estimación) y /health, para que los dos digan lo mismo.
+    """
+    fallback_model = settings.fallback_model
+    if not fallback_model:
+        return None
+    provider = _provider_de(fallback_model)
+    if settings.active_api_key(provider):
+        return None
+    return (
+        f"El modelo de respaldo {fallback_model} no está disponible porque falta "
+        f"{_variable_de_clave(provider)}. Las estimaciones usan solo el modelo "
+        "primario: si ese proveedor falla, la estimación no se podrá completar."
+    )
 
 
 @dataclass
@@ -62,37 +86,43 @@ class LLMWrapper:
         settings = get_settings()
 
         # Cada deployment recibe la clave de su propio proveedor.
-        primary_provider = primary_model.split("/", 1)[0] if "/" in primary_model else "openai"
-        fallback_provider = (
-            (fallback_model or "").split("/", 1)[0]
-            if fallback_model and "/" in fallback_model
-            else "openai"
+        primary_provider = _provider_de(primary_model)
+        primary_key = settings.active_api_key(primary_provider)
+        fallback_key = (
+            settings.active_api_key(_provider_de(fallback_model)) if fallback_model else None
         )
 
-        primary_key = settings.active_api_key(primary_provider)
-        fallback_key = settings.active_api_key(fallback_provider) if fallback_model else None
-
-        # El mensaje nombra la variable de entorno: es lo que el operador tiene
-        # que tocar, y llega tal cual al cliente en el 503 (ver app/main.py).
+        # Sin la clave del primario no hay servicio: el mensaje nombra la
+        # variable y llega tal cual al cliente en el 503 (ver app/main.py).
         if not primary_key:
             raise LLMConfigurationError(
                 f"Falta {_variable_de_clave(primary_provider)} "
                 f"para el modelo primario {primary_model}."
             )
-        if fallback_model and not fallback_key:
-            raise LLMConfigurationError(
-                f"Falta {_variable_de_clave(fallback_provider)} "
-                f"para el modelo de respaldo {fallback_model}."
+
+        # Sin la clave del respaldo el servicio sigue con el primario solo,
+        # igual que /health (Settings.is_configured mira solo el primario). El
+        # operador se entera por el log; el usuario, por `avisos` en cada
+        # respuesta.
+        aviso = aviso_sin_respaldo(settings)
+        self.avisos: tuple[str, ...] = (aviso,) if aviso else ()
+        if aviso:
+            emitir(
+                __name__,
+                "respaldo_no_disponible",
+                nivel="warning",
+                modelo_respaldo=fallback_model,
+                detalle=aviso,
             )
 
-        # Deployments del Router: el primario y, si hay, el de respaldo.
+        # Deployments del Router: el primario y, si tiene clave, el de respaldo.
         deployments = [
             {
                 "model_name": primary_model,
                 "litellm_params": {"model": primary_model, "api_key": primary_key},
             },
         ]
-        if fallback_model:
+        if fallback_model and fallback_key:
             deployments.append(
                 {
                     "model_name": fallback_model,
@@ -102,7 +132,9 @@ class LLMWrapper:
 
         self._router = Router(
             model_list=deployments,
-            fallbacks=[{primary_model: [fallback_model]}] if fallback_model else [],
+            fallbacks=[{primary_model: [fallback_model]}]
+            if fallback_model and fallback_key
+            else [],
             num_retries=num_retries,
             timeout=timeout,
         )

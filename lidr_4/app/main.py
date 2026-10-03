@@ -27,6 +27,7 @@ from .cache import cerrar_cliente_cache, crear_cliente_cache
 from .config import LLMConfigurationError, Settings, get_settings
 from .routers.estimations import router as estimations_router
 from .services.cache import crear_estimation_cache
+from .services.llm_wrapper import aviso_sin_respaldo
 
 
 def configure_logging(level: str = "INFO") -> None:
@@ -123,17 +124,23 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
-        # Sinllama al LLM ni la exige: describe el estado de la configuración.
+        # Sin llamar al LLM ni exigirlo: describe el estado de la configuración.
         # `llm_configured` es lo que el orquestador mira para decidir si el
-        # arranque sin secret es aceptable o no.
+        # arranque sin secret es aceptable o no. Mira solo el primario: sin la
+        # clave del respaldo el servicio funciona igual, y eso lo informan
+        # `fallback_configured` y `avisos`, con el mismo texto que recibe el
+        # usuario en cada estimación.
+        aviso = aviso_sin_respaldo(settings)
         return {
             "status": "ok",
             "env": settings.app_env,
             "llm_configured": settings.is_configured,
+            "fallback_configured": aviso is None,
             "primary_model": settings.primary_model,
             "fallback_model": settings.fallback_model,
             "prompt_version": settings.prompt_version,
             "cache_enabled": bool(settings.redis_url),
+            "avisos": [aviso] if aviso else [],
         }
 
     _completar_schema_openapi(app)

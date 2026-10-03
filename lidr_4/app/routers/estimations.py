@@ -84,6 +84,7 @@ async def estimate(
     return EstimationResponse(
         text=result.content,
         prompt_version=result.prompt_version,
+        avisos=list(llm_wrapper.avisos),
     )
 
 

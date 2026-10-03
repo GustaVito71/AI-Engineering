@@ -1,4 +1,4 @@
-"""Tests del endpoint POST /api/v1/estimate: respuesta normal y errores.
+"""Tests del endpoint POST /api/v1/estimate y de /health: respuesta normal, avisos y errores.
 
 Sin red ni Redis: REDIS_URL vacío desactiva la caché. Los casos de 503 usan el
 wrapper real (sin la clave que falta ni siquiera llega a construirse); los de
@@ -50,8 +50,9 @@ def cliente(monkeypatch):
 class _WrapperFalso:
     """Reemplaza al LLMWrapper: devuelve un resultado fijo o lanza `error`."""
 
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, avisos: tuple[str, ...] = ()) -> None:
         self._error = error
+        self.avisos = avisos
 
     async def estimate(self, *, prompt_version: str, **_kwargs) -> LLMCallResult:
         if self._error is not None:
@@ -102,6 +103,7 @@ def test_returns_200_with_text_and_prompt_version(cliente) -> None:
     assert r.json() == {
         "text": "| phase | duration_weeks | cost_eur | confidence_pct |",
         "prompt_version": "v1",
+        "avisos": [],
     }
 
 
@@ -115,17 +117,54 @@ def test_missing_primary_key_returns_503_naming_the_variable(cliente) -> None:
     assert "Falta OPENAI_API_KEY" in r.json()["detail"]
 
 
-def test_missing_fallback_key_returns_503_naming_the_variable(cliente) -> None:
-    with cliente(OPENAI_API_KEY="sk-openai-secreta") as c:
+def test_503_never_leaks_the_configured_key(cliente) -> None:
+    with cliente(ANTHROPIC_API_KEY="sk-ant-secreta") as c:
         r = c.post("/api/v1/estimate", json=BODY)
     assert r.status_code == 503
-    assert "Falta ANTHROPIC_API_KEY" in r.json()["detail"]
+    assert "sk-ant-secreta" not in r.text
 
 
-def test_503_never_leaks_the_configured_key(cliente) -> None:
+def test_missing_fallback_key_still_estimates_and_warns(cliente, monkeypatch) -> None:
+    """Sin la clave del respaldo la estimación sale con el primario, y la
+    respuesta trae el aviso para el usuario."""
+
+    async def sin_red(self, **kwargs):
+        return await litellm.acompletion(
+            model=kwargs["model"], messages=kwargs["messages"], mock_response="estimación"
+        )
+
+    monkeypatch.setattr(litellm.Router, "acompletion", sin_red)
     with cliente(OPENAI_API_KEY="sk-openai-secreta") as c:
         r = c.post("/api/v1/estimate", json=BODY)
+    assert r.status_code == 200
+    cuerpo = r.json()
+    assert cuerpo["text"] == "estimación"
+    [aviso] = cuerpo["avisos"]
+    assert "ANTHROPIC_API_KEY" in aviso
     assert "sk-openai-secreta" not in r.text
+
+
+def test_avisos_reach_the_response(cliente) -> None:
+    with _con_wrapper(cliente, _WrapperFalso(avisos=("aviso de prueba",))) as c:
+        r = c.post("/api/v1/estimate", json=BODY)
+    assert r.json()["avisos"] == ["aviso de prueba"]
+
+
+def test_health_reports_missing_fallback(cliente) -> None:
+    with cliente(OPENAI_API_KEY="sk-openai") as c:
+        h = c.get("/health").json()
+    assert h["llm_configured"] is True
+    assert h["fallback_configured"] is False
+    [aviso] = h["avisos"]
+    assert "ANTHROPIC_API_KEY" in aviso
+
+
+def test_health_without_notices_when_both_keys_are_set(cliente) -> None:
+    with cliente(OPENAI_API_KEY="sk-openai", ANTHROPIC_API_KEY="sk-ant") as c:
+        h = c.get("/health").json()
+    assert h["llm_configured"] is True
+    assert h["fallback_configured"] is True
+    assert h["avisos"] == []
 
 
 def test_health_still_answers_without_keys(cliente) -> None:
