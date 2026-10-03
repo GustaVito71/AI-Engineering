@@ -1,63 +1,66 @@
-"""Exact-match cache for LLM responses using Redis.
+"""Caché exact-match de respuestas del LLM, sobre Redis.
 
-The cache key is a deterministic hash of the (system_prompt, user_prompt) pair.
-TTL is configurable via Settings.CACHE_TTL (default 24h). An empty REDIS_URL
-disables the cache entirely without code changes.
+La clave es un hash determinista del par (system_prompt, user_prompt): como el
+prompt entero entra en la clave, cambiar la plantilla invalida la caché solo.
+TTL configurable con CACHE_TTL. REDIS_URL vacío desactiva la caché sin tocar
+código.
+
+Fail soft por diseño, igual que app/cache.py: si Redis está caído, lento o
+devuelve una entrada corrupta, la lectura cuenta como miss y la escritura se
+omite, con un warning en el log. La estimación nunca falla por la caché.
+
+Este módulo no reimplementa el acceso a Redis ni crea conexiones: delega en las
+funciones de app/cache.py y usa el único cliente de la app, el que crea el
+lifespan con `crear_cliente_cache` (timeouts, PING de arranque y cierre al
+apagar). Así hay un solo pool de conexiones y es el que se cierra.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 
-import redis.asyncio as redis
+from redis.asyncio import Redis
+
+from app.cache import get_cached_estimation, set_cached_estimation
+
+
+def crear_estimation_cache(client: Redis | None, ttl: int) -> EstimationCache | _NoOpCache:
+    """La caché sobre el cliente del lifespan, o una desactivada si no hay cliente.
+
+    `client` es None cuando REDIS_URL está vacío: es el modo "sin caché" de
+    `crear_cliente_cache`, y acá se traduce a una caché que siempre falla.
+    """
+    if client is None:
+        return _NoOpCache()
+    return EstimationCache(client, ttl)
 
 
 class EstimationCache:
-    """Redis-backed exact-match cache for LLM responses."""
+    """Caché exact-match en Redis que nunca hace fallar una estimación.
 
-    def __init__(self, client: redis.Redis, ttl: int) -> None:
+    No es dueña del cliente: lo crea y lo cierra el lifespan (app/main.py).
+    """
+
+    def __init__(self, client: Redis, ttl: int) -> None:
         self._client = client
         self._ttl = ttl
 
-    @classmethod
-    def from_url(cls, url: str, ttl: int) -> EstimationCache:
-        """Create cache instance from Redis URL.
-
-        Empty URL returns a no-op cache that always misses and never stores.
-        """
-        if not url:
-            return _NoOpCache()
-        client = redis.from_url(url, decode_responses=True)
-        return cls(client, ttl)
-
-    def _make_key(self, system_prompt: str, user_prompt: str) -> str:
-        """Deterministic cache key from prompt pair."""
+    def make_key(self, system_prompt: str, user_prompt: str) -> str:
+        """Clave determinista a partir del par de prompts."""
         combined = f"{system_prompt}|{user_prompt}"
         return f"estimator:{hashlib.sha256(combined.encode()).hexdigest()}"
 
     async def get(self, key: str) -> dict | None:
-        """Retrieve cached response if present."""
-        data = await self._client.get(key)
-        if data:
-            return json.loads(data)
-        return None
+        """La respuesta cacheada, o None en miss, con Redis caído o entrada corrupta."""
+        return await get_cached_estimation(self._client, key)
 
     async def set(self, key: str, value: dict) -> None:
-        """Store response in cache with TTL."""
-        await self._client.setex(key, self._ttl, json.dumps(value))
-
-    async def close(self) -> None:
-        """Close Redis connection pool."""
-        await self._client.close()
-
-    def make_key(self, system_prompt: str, user_prompt: str) -> str:
-        """Public method for external callers (e.g., LLMWrapper) to compute keys."""
-        return self._make_key(system_prompt, user_prompt)
+        """Guarda la respuesta con TTL. Si Redis falla, se omite sin error."""
+        await set_cached_estimation(self._client, key, value, self._ttl)
 
 
 class _NoOpCache:
-    """No-op cache implementation when Redis is disabled."""
+    """Caché desactivada (REDIS_URL vacío): siempre miss, nunca guarda."""
 
     def make_key(self, _system: str, _user: str) -> str:
         return "noop"
@@ -66,7 +69,4 @@ class _NoOpCache:
         return None
 
     async def set(self, _key: str, _value: dict) -> None:
-        pass
-
-    async def close(self) -> None:
         pass
