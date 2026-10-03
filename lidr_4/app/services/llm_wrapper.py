@@ -7,12 +7,14 @@ el deployment primario y el fallback.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from litellm import Router, completion_cost
 
 from app.config import VARIABLE_DE_API_KEY, LLMConfigurationError, get_settings
+from app.tracing import emitir
 
 
 def _variable_de_clave(provider: str) -> str:
@@ -31,6 +33,8 @@ class LLMCallResult:
     completion_tokens: int
     cost_usd: float
     prompt_version: str
+    # True si la respuesta salió de la caché: no hubo llamada al proveedor.
+    cached: bool = False
 
 
 class LLMWrapper:
@@ -120,11 +124,13 @@ class LLMWrapper:
         max_tokens: int | None = None,
     ) -> LLMCallResult:
         """Ejecuta la estimación con fallback automático y cache."""
+        inicio = time.perf_counter()
+
         # Primero la caché: un acierto evita la llamada al proveedor.
         cache_key = self._cache.make_key(system_prompt, user_prompt)
         cached = await self._cache.get(cache_key)
         if cached:
-            return LLMCallResult(
+            result = LLMCallResult(
                 content=cached["content"],
                 model=cached["model"],
                 provider=cached["provider"],
@@ -132,7 +138,10 @@ class LLMWrapper:
                 completion_tokens=cached["completion_tokens"],
                 cost_usd=cached["cost_usd"],
                 prompt_version=prompt_version,
+                cached=True,
             )
+            self._registrar(result, inicio)
+            return result
 
         response = await self._router.acompletion(
             model=self._primary_model,
@@ -182,4 +191,28 @@ class LLMWrapper:
                 "cost_usd": result.cost_usd,
             },
         )
+        self._registrar(result, inicio)
         return result
+
+    def _registrar(self, result: LLMCallResult, inicio: float) -> None:
+        """Evento de trazabilidad de una estimación completada.
+
+        Con acierto de caché no se paga nada: `coste_usd` es 0 y lo que costó la
+        respuesta original va a `coste_evitado_usd`, que es lo que la caché ahorró.
+        `uso_respaldo` marca las respuestas del modelo de respaldo, que pueden
+        costar bastante más que el primario (ver PLAN.md §7).
+        """
+        emitir(
+            __name__,
+            "estimacion_completada",
+            modelo=result.model,
+            proveedor=result.provider,
+            uso_respaldo=result.model != self._primary_model,
+            desde_cache=result.cached,
+            tokens_prompt=result.prompt_tokens,
+            tokens_completion=result.completion_tokens,
+            coste_usd=0.0 if result.cached else result.cost_usd,
+            coste_evitado_usd=result.cost_usd if result.cached else 0.0,
+            latencia_ms=round((time.perf_counter() - inicio) * 1000, 1),
+            prompt_version=result.prompt_version,
+        )

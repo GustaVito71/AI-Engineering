@@ -15,18 +15,19 @@ La inteligencia adicional (output estructurado, guardrails, cache semántico) se
 |---|---|
 | Contrato de entrada (`EstimationRequest` / `EstimationResponse`) | Hecho (WU2) |
 | Prompts versionados (`system.j2`, `user.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
+| Wrapper LLM (`app/services/llm_wrapper.py`), caché, router `POST /api/v1/estimate`, errores y trazabilidad | Hecho (WU5) |
 | Cliente Streamlit | Hecho (WU6) |
-| Wrapper LLM (`app/services/llm_wrapper.py`) y router `POST /api/v1/estimate` | **Pendiente (WU5)** |
+| Salida estructurada, guardrails, caché semántico | Pendiente (WU7–WU10) |
 
-Hasta que WU5 exista, `app.main` no arranca: importa `app.routers.estimations`, que todavía no está escrito. El detalle de cada unidad está en [`PLAN.md`](PLAN.md) §6.
+El detalle de cada unidad está en [`PLAN.md`](PLAN.md) §6.
+
+**Convenciones:** los mensajes al usuario (errores HTTP, textos de la UI y de Swagger), los comentarios y los docstrings van en español; los identificadores (variables, funciones, métodos, clases) van en inglés.
 
 ## Cómo levantar
 
-> Requiere WU5 (ver **Estado**).
-
 ```bash
 cd lidr_4
-cp .env.example .env  # añade al menos OPENAI_API_KEY o ANTHROPIC_API_KEY
+cp .env.example .env  # completá las API keys del modelo primario y del de respaldo
 uv sync
 uv run python -m app            # puerto APP_PORT (default 8001)
 uv run python -m app --reload   # con recarga
@@ -34,7 +35,9 @@ uv run python -m app --reload   # con recarga
 
 `python -m app` usa `APP_PORT` de Settings. `uvicorn app.main:app` a secas usa el 8000, que suele estar tomado. El servicio queda en `http://localhost:8001` (Swagger en `/docs`, health en `/health`).
 
-Redis es opcional: con `REDIS_URL` vacío el cache queda desactivado, y si Redis no responde el servicio sigue sin cache (fail soft).
+El servicio arranca aunque falten las API keys: `/health` lo informa con `llm_configured: false` y `POST /api/v1/estimate` responde 503 nombrando la variable que falta. Con la configuración por defecto hacen falta las dos claves, `OPENAI_API_KEY` (primario) y `ANTHROPIC_API_KEY` (respaldo).
+
+Redis es opcional: con `REDIS_URL` vacío la caché queda desactivada, y si Redis no responde el servicio sigue sin caché (fail soft).
 
 ### Probar el endpoint
 
@@ -58,6 +61,17 @@ Respuesta:
 }
 ```
 
+Errores posibles:
+
+| Código | Cuándo | `detail` |
+|---|---|---|
+| 422 | La entrada no cumple el contrato (longitud de `description`, valores de los enums) | Lista de errores de validación de Pydantic |
+| 503 | Falta una API key | Nombra la variable, por ejemplo *"Falta OPENAI_API_KEY para el modelo primario openai/gpt-4o-mini."* |
+| 504 | El proveedor no respondió a tiempo (agotados los reintentos y el respaldo) | Mensaje genérico en español |
+| 502 | Cualquier otro fallo del proveedor | Mensaje genérico en español |
+
+En 502 y 504 el detalle real del proveedor no llega al cliente: queda en el log (ver **Trazabilidad**).
+
 ### Cliente Streamlit
 
 El cliente Streamlit es un formulario que construye el JSON y muestra el `text` recibido. Consume la API por HTTP:
@@ -78,7 +92,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-La batería corre en milisegundos sin tocar APIs externas:
+La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se simulan con `mock_response` de LiteLLM y Redis con fakeredis):
 
 - `test/test_schemas.py` — validaciones del `EstimationRequest` (longitudes, enums, campos obligatorios) y de `Settings` (techo del operador sobre `description`, `LOG_LEVEL`).
 - `test/test_prompts.py` — render de la versión `v1`:
@@ -88,7 +102,15 @@ La batería corre en milisegundos sin tocar APIs externas:
   - **Caché:** el YAML se lee y se calcula una sola vez por versión, y cada llamada recibe su propia copia.
 - `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, y un 422 de FastAPI llega como lista de `msg`.
 
-Los tests del endpoint y del wrapper LLM llegan con WU5.
+- `test/test_llm_wrapper.py` — el wrapper LLM:
+  - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario o la del respaldo, `LLMConfigurationError` nombrando la variable.
+  - **Router y respaldo:** el Router tiene los dos modelos, y si el primario falla responde el de respaldo.
+  - **Resultado:** `model` es el nombre del modelo (no el id interno del deployment), `provider` coincide, se respeta `prompt_version` y el coste se calcula.
+  - **Configuración:** reintentos, timeout y `max_tokens` salen de `Settings`.
+  - **Coste:** si `completion_cost` falla, el coste es 0 y la respuesta sale igual.
+  - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y con acierto de caché; el prompt nunca va al log.
+- `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con el prompt, entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
+- `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 por clave faltante (sin filtrar la clave configurada), `/health` sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log.
 
 ## Estructura del proyecto
 
@@ -98,11 +120,11 @@ lidr_4/
 │   ├── __main__.py                    # Lanzador: python -m app [--port N] [--reload]
 │   ├── main.py                        # FastAPI app, lifespan, /health, parche OpenAPI
 │   ├── config.py                      # Settings (Pydantic Settings, .env)
-│   ├── cache.py                       # Cliente Redis fail-soft (keying semántico en WU10)
+│   ├── cache.py                       # Cliente Redis único (lifespan), lectura/escritura fail soft
 │   ├── tracing.py                     # emitir(): eventos de trazabilidad con structlog
-│   ├── dependencies.py                # Singletons de cache + LLMWrapper (se completa en WU5)
+│   ├── dependencies.py                # LLMWrapper perezoso, con la caché del lifespan
 │   ├── routers/
-│   │   └── estimations.py             # POST /api/v1/estimate            (WU5, pendiente)
+│   │   └── estimations.py             # POST /api/v1/estimate, errores 502/504
 │   ├── schemas/
 │   │   └── estimation.py              # EstimationRequest, EstimationResponse, enums
 │   ├── prompts/
@@ -113,11 +135,15 @@ lidr_4/
 │   │           ├── user.j2            # bloque <project_description>
 │   │           └── examples.yaml      # roles (label, plural, tarifa), redondeo, few-shot
 │   └── services/
-│       └── llm_wrapper.py             # LiteLLM Router con fallback y coste (WU5, pendiente)
+│       ├── cache.py                   # Caché exact-match de estimaciones (sobre app/cache.py)
+│       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad
 ├── test/
 │   ├── conftest.py
 │   ├── test_schemas.py
 │   ├── test_prompts.py
+│   ├── test_llm_wrapper.py
+│   ├── test_cache.py
+│   ├── test_estimate_endpoint.py
 │   └── test_frontend.py
 ├── streamlit_app.py                   # Formulario que consume /api/v1/estimate
 ├── PLAN.md                            # Plan de construcción y decisiones
@@ -146,22 +172,40 @@ Consecuencias:
 
 Lo que vive **fuera** de la versión (en código): el contrato (`EstimationRequest`), el switch de versión, el wrapper y la aritmética de los ejemplos (`loader.py`). Todo lo demás (rol del modelo, reglas, ejemplos, tarifas, formatos de salida, niveles de detalle) vive en `v1/`. Si para cambiar el comportamiento del modelo hay que tocar Python, la separación está rota.
 
+## Llamada al LLM, caché y trazabilidad
+
+**Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave.
+
+**Caché exact-match.** Antes de llamar al proveedor se busca la respuesta en Redis. La clave es un hash del system prompt y el user prompt completos, así que cambiar la plantilla invalida la caché sola. Hay un único cliente de Redis, el que crea el lifespan (`app/cache.py`), y es el que se cierra al apagar. Si Redis está caído, lento o tiene una entrada corrupta, la estimación sale igual sin caché (fail soft, con timeouts de 1 s).
+
+**Trazabilidad.** Cada estimación deja un evento en el log, emitido con `app/tracing.py`:
+
+| Evento | Nivel | Campos |
+|---|---|---|
+| `estimacion_completada` | `info` | `modelo`, `proveedor`, `uso_respaldo`, `desde_cache`, `tokens_prompt`, `tokens_completion`, `coste_usd`, `coste_evitado_usd`, `latencia_ms`, `prompt_version` |
+| `estimacion_fallida` | `error` | `codigo_http` (502/504), `tipo_error`, `detalle` (el mensaje real del proveedor) |
+
+`coste_usd` es lo que costó esa request: con acierto de caché vale 0 y lo que costó la respuesta original va a `coste_evitado_usd`. `uso_respaldo` marca las respuestas del modelo de respaldo, que pueden costar bastante más que el primario (PLAN.md §7). Los eventos llevan métricas, nunca el texto del prompt ni la descripción del cliente.
+
 ## Variables de entorno
 
 Referencia completa y comentada en `.env.example`. Las principales:
 
 | Variable | Default | Notas |
 |---|---|---|
-| `OPENAI_API_KEY` | — | Requerido al menos uno de los dos; se exige al usarse, no al arrancar |
-| `ANTHROPIC_API_KEY` | — | Requerido al menos uno de los dos |
+| `OPENAI_API_KEY` | — | Clave del proveedor `openai`. Se exige al usarse, no al arrancar |
+| `ANTHROPIC_API_KEY` | — | Clave del proveedor `anthropic`. Hacen falta las claves de los proveedores de `PRIMARY_MODEL` y `FALLBACK_MODEL` |
 | `PRIMARY_MODEL` | `openai/gpt-4o-mini` | Deployment principal del Router. El prefijo decide el provider |
 | `FALLBACK_MODEL` | `anthropic/claude-haiku-4-5` | Se usa si el primario falla. Tiene que ser distinto del primario |
+| `LLM_TIMEOUT` | `30.0` | Segundos por llamada al proveedor |
+| `LLM_MAX_RETRIES` | `2` | Reintentos del Router antes de pasar al respaldo |
+| `LLM_MAX_TOKENS` | `4000` | Tope de tokens de la respuesta |
 | `PROMPT_VERSION` | `v1` | Versión de prompt. Es el mecanismo de invalidación del caché semántico |
-| `REDIS_URL` | `redis://localhost:6379/0` | Vacío = cache desactivado |
+| `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada |
 | `CACHE_TTL` | `86400` | Segundos |
 | `DESCRIPCION_MIN_CHARS` / `DESCRIPCION_MAX_CHARS` | `20` / `2000` | Techo del operador; solo puede estrechar el contrato |
 | `APP_ENV` | `local` | Se muestra en `/health` |
-| `LOG_LEVEL` | `INFO` | `DEBUG` vuelca prompt y respuesta completos al log |
+| `LOG_LEVEL` | `INFO` | Nivel de los logs propios. Las librerías HTTP y del SDK quedan fijas en `WARNING` |
 | `APP_PORT` | `8001` | Puerto de `python -m app` |
 | `ESTIMATOR_API_BASE_URL` | `http://localhost:8001` | Lo lee el cliente Streamlit |
 

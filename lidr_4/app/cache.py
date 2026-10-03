@@ -29,18 +29,12 @@ from __future__ import annotations
 import json
 
 import structlog
-from fastapi import Request
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from .config import Settings
 
 logger = structlog.get_logger(__name__)
-
-# Clave de app.state donde el lifespan publica el cliente. El router lo lee
-# por dependency, no por importar el cliente: así los tests pueden inyectar un
-# fakeredis (o None) sin conocer la clave.
-CLIENTE_CACHE = "cache_client"
 
 
 async def get_cached_estimation(client: Redis, key: str) -> dict | None:
@@ -120,13 +114,3 @@ async def cerrar_cliente_cache(cliente: Redis | None) -> None:
         await cliente.aclose()
     except RedisError as exc:
         logger.warning("No se pudo cerrar el cliente de Redis limpiamente", error=str(exc))
-
-
-async def get_cache_client(request: Request) -> Redis | None:
-    """Dependency de FastAPI: el cliente del lifespan, o None si no hay cache.
-
-    `getattr` y no `[...]`: sin lifespan (un test que monta la app con
-    TestClient sin contexto, o una app construida a mano) no hay cliente, y eso
-    es el estado válido "sin cache", no un error a propagar.
-    """
-    return getattr(request.app.state, CLIENTE_CACHE, None)
