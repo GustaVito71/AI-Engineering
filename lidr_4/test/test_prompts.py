@@ -130,36 +130,34 @@ def test_examples_computed_from_rates_and_rounding() -> None:
         # La suma de los costes de las fases tiene que coincidir con el total
         phase_cost_sum = sum(p["cost_eur"] for p in phases)
         assert phase_cost_sum == totals["total_cost_eur"], (
-            f"Phase cost sum {phase_cost_sum} != totals {totals['total_cost_eur']}"
+            f"Suma de costes de fases {phase_cost_sum} != total {totals['total_cost_eur']}"
         )
         # La suma de semanas también tiene que coincidir
         weeks_sum = sum(p["duration_weeks"] for p in phases)
         assert weeks_sum == totals["total_duration_weeks"], (
-            f"Phase weeks sum {weeks_sum} != totals {totals['total_duration_weeks']}"
+            f"Suma de semanas de fases {weeks_sum} != total {totals['total_duration_weeks']}"
         )
         # El coste de cada fase es la suma de los costes de sus roles
         for p in phases:
             role_cost_sum = sum(b["cost_eur"] for b in p["team_breakdown"])
             assert p["cost_eur"] == role_cost_sum, (
-                f"Phase {p['phase']} cost {p['cost_eur']} != sum of role costs {role_cost_sum}"
+                f"Fase {p['phase']}: coste {p['cost_eur']} != suma de costes por rol {role_cost_sum}"
             )
             # Las horas son múltiplo de hours_base (5)
-            assert p["hours"] % 5 == 0, (
-                f"Phase {p['phase']} hours {p['hours']} not rounded to nearest 5"
-            )
+            assert p["hours"] % 5 == 0, f"Fase {p['phase']}: {p['hours']} horas no es múltiplo de 5"
             # Las horas de cada rol también son múltiplo de 5
             for b in p["team_breakdown"]:
                 assert b["hours"] % 5 == 0, (
-                    f"Phase {p['phase']} role {b['role']} hours {b['hours']} not rounded to nearest 5"
+                    f"Fase {p['phase']}, rol {b['role']}: {b['hours']} horas no es múltiplo de 5"
                 )
             # El coste es múltiplo de cost_base (50)
             assert p["cost_eur"] % 50 == 0, (
-                f"Phase {p['phase']} cost {p['cost_eur']} not rounded to nearest 50"
+                f"Fase {p['phase']}: coste {p['cost_eur']} no es múltiplo de 50"
             )
             # El coste de cada rol también es múltiplo de 50
             for b in p["team_breakdown"]:
                 assert b["cost_eur"] % 50 == 0, (
-                    f"Phase {p['phase']} role {b['role']} cost {b['cost_eur']} not rounded to nearest 50"
+                    f"Fase {p['phase']}, rol {b['role']}: coste {b['cost_eur']} no es múltiplo de 50"
                 )
 
 
@@ -171,7 +169,7 @@ def test_scope_renders_rates_and_rounding_from_yaml() -> None:
 
     # Se extrae exactamente el bloque <scope>
     scope_match = re.search(r"<scope>\s*(.*?)\s*</scope>", system, re.DOTALL)
-    assert scope_match, "<scope> block not found in system prompt"
+    assert scope_match, "No se encontró el bloque <scope> en el system prompt"
     scope = scope_match.group(1)
 
     # Tarifas con su formato exacto (todos los roles del YAML)
@@ -198,7 +196,7 @@ def test_narrative_uses_proper_case_and_blank_lines() -> None:
 
     # Se extrae la sección de ejemplos
     ex_match = re.search(r"<examples>.*?</examples>", system, re.DOTALL)
-    assert ex_match, "<examples> block not found"
+    assert ex_match, "No se encontró el bloque <examples>"
     examples = ex_match.group(0)
 
     # Nombres de fase con mayúscula inicial, no pasados por lower()
@@ -232,7 +230,7 @@ def test_line_items_numbering_resets_per_example() -> None:
         lines = [line for line in ex.splitlines() if re.match(r"^\d+\.\s", line)]
         numbers = [int(line.split(".")[0]) for line in lines]
         assert numbers == list(range(1, len(numbers) + 1)), (
-            f"Example {ex_idx + 1} numbering broken: {numbers}"
+            f"Ejemplo {ex_idx + 1}: numeración incorrecta {numbers}"
         )
 
 
@@ -250,10 +248,10 @@ def test_examples_each_row_on_own_line() -> None:
         if line.startswith("| ") and not line.startswith("| phase") and not line.startswith("|---")
     ]
     # Una línea por fase y por ejemplo (4 ejemplos × 5 fases = 20)
-    assert len(table_lines) == 20, f"Expected 20 phase rows, got {len(table_lines)}"
+    assert len(table_lines) == 20, f"Se esperaban 20 filas de fases y hay {len(table_lines)}"
     # Cada fila es una línea completa (no pegada a la siguiente)
     for line in table_lines:
-        assert line.count("|") == 5, f"Row not well-formed: {line}"
+        assert line.count("|") == 5, f"Fila mal formada: {line}"
 
     # line_items: cada elemento en su propia línea
     request = _make_request_fmt(OutputFormat.LINE_ITEMS)
@@ -261,7 +259,7 @@ def test_examples_each_row_on_own_line() -> None:
     item_lines = [line for line in system.splitlines() if re.match(r"^\d+\.\s", line)]
     assert len(item_lines) > 0
     for line in item_lines:
-        assert " — " in line, f"Line item malformed: {line}"
+        assert " — " in line, f"Elemento de línea mal formado: {line}"
 
     # narrative: cada párrafo de fase en su propia línea
     request = _make_request_fmt(OutputFormat.NARRATIVE)
@@ -270,7 +268,7 @@ def test_examples_each_row_on_own_line() -> None:
         line for line in system.splitlines() if line.startswith("The ") and "phase spans" in line
     ]
     assert len(narrative_lines) == 20, (
-        f"Expected 20 narrative paragraphs, got {len(narrative_lines)}"
+        f"Se esperaban 20 párrafos narrativos y hay {len(narrative_lines)}"
     )
 
 
@@ -281,7 +279,7 @@ def test_scope_includes_all_rates() -> None:
     system, _ = render_estimation_prompt(request)
 
     scope_match = re.search(r"<scope>\s*(.*?)\s*</scope>", system, re.DOTALL)
-    assert scope_match, "<scope> block not found in system prompt"
+    assert scope_match, "No se encontró el bloque <scope> en el system prompt"
     scope = scope_match.group(1)
 
     # Las tarifas aparecen con 2 decimales
@@ -303,9 +301,9 @@ def test_line_items_show_roles_with_proper_case() -> None:
     for line in lines:
         # Cada línea lleva "(Rol)": se comprueba que esté bien escrito en mayúsculas
         match = re.search(r"\(([^)]+)\)", line)
-        assert match, f"Role not found in line: {line}"
+        assert match, f"No se encontró el rol en la línea: {line}"
         role = match.group(1)
-        assert role in ("Developer", "Designer", "QA", "PM"), f"Unexpected role format: {role}"
+        assert role in ("Developer", "Designer", "QA", "PM"), f"Formato de rol inesperado: {role}"
 
 
 # --- Versiones de prueba en tmp_path -------------------------------------------
