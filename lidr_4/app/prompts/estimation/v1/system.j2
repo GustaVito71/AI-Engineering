@@ -2,7 +2,7 @@
 {{ n }} {{ singular if n == 1 else plural }}
 {%- endmacro -%}
 
-{#- Team summary: peak headcount per role, labels and plurals from examples.yaml. -#}
+{#- Resumen de equipo: dotación máxima por rol, con etiquetas y plurales de examples.yaml. -#}
 {%- macro team_summary(team_headcount) -%}
 {%- for role, hc in team_headcount.items() -%}
 {{ pluralize(hc, rates[role].label, rates[role].plural) }}{{ ", " if not loop.last else "" }}
