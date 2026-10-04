@@ -13,8 +13,10 @@ Reparto de responsabilidades:
 - ``loader.py``: solo aritmética genérica (horas, costes, totales, dotación).
   Nunca decide cómo se muestra nada, así que una versión nueva puede cambiar
   la presentación sin tocar Python.
-- ``system.j2``: toda la presentación (etiquetas, plurales, resumen de equipo,
-  maquetación).
+- ``system.j2``: las instrucciones al modelo (rol, reglas, formatos, niveles de
+  detalle). Incluye ``examples.j2`` de su propia versión.
+- ``examples.j2``: la presentación de los ejemplos (etiquetas, plurales, resumen
+  de equipo, maquetación).
 """
 
 from __future__ import annotations
@@ -191,6 +193,9 @@ def render_estimation_prompt(
         "hours_rounding_base": version_data["rounding"]["hours_base"],
         "cost_rounding_base": version_data["rounding"]["cost_base"],
         "examples": version_data["examples"],
+        # system.j2 incluye el examples.j2 de su propia versión con esta variable,
+        # así la ruta del include no lleva una versión escrita a mano.
+        "version": version,
     }
     system = _env.get_template(f"estimation/{version}/system.j2").render(**context)
     user = _env.get_template(f"estimation/{version}/user.j2").render(**context)

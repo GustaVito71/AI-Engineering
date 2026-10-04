@@ -324,7 +324,7 @@ def version_temporal(tmp_path, monkeypatch):
     origen = _V1_DIR
     destino = tmp_path / "estimation" / "vtest"
     destino.mkdir(parents=True)
-    for plantilla in ("system.j2", "user.j2"):
+    for plantilla in ("system.j2", "user.j2", "examples.j2"):
         shutil.copy(origen / plantilla, destino / plantilla)
 
     monkeypatch.setattr(loader, "_BASE_DIR", tmp_path)
@@ -420,3 +420,27 @@ def test_version_data_is_computed_once() -> None:
     assert (info.misses, info.hits) == (1, 1)
     assert d1 is not d2
     assert d1 == d2
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_system_includes_examples_of_its_own_version(version) -> None:
+    """system.j2 incluye examples.j2 con la versión como variable, no escrita a mano:
+    al copiar una versión para crear la siguiente, el include sigue apuntando bien."""
+    system = (loader._BASE_DIR / "estimation" / version / "system.j2").read_text(encoding="utf-8")
+    assert '{% include "estimation/" ~ version ~ "/examples.j2" %}' in system
+    assert "estimation/v1" not in system
+    assert "estimation/v2" not in system
+
+
+def test_a_copied_version_renders_its_own_examples(version_temporal) -> None:
+    """Una versión nueva copiada de v1 muestra SUS ejemplos, no los de v1."""
+    version = version_temporal(_yaml_v1())
+    ejemplos = loader._BASE_DIR / "estimation" / version / "examples.j2"
+    ejemplos.write_text(
+        ejemplos.read_text(encoding="utf-8").replace("<examples>", "<examples>\nMARCA-VTEST"),
+        encoding="utf-8",
+    )
+
+    system, _ = render_estimation_prompt(_make_request(), version=version)
+
+    assert "MARCA-VTEST" in system

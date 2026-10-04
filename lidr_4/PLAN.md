@@ -35,7 +35,7 @@ conoce el problema que resuelven.
 | Decisión | Por qué |
 |---|---|
 | `EstimationRequest` alimenta la UI; el contrato del LLM aparece en WU8 | La UI puede cambiar sin tocar el prompt ni la salida del modelo |
-| Los few-shot se versionan con el prompt: datos en `v1/examples.yaml`, presentación en macros de `v1/system.j2` | Una sola fuente por versión. Los ejemplos se maquetan según el `output_format` pedido, así que se elimina la clase de bugs "el ejemplo 3 enseña un formato que el prompt ya no pide" |
+| Los few-shot se versionan con el prompt: datos en `vN/examples.yaml`, presentación en `vN/examples.j2`, que `system.j2` incluye | Una sola fuente por versión. Los ejemplos se maquetan según el `output_format` pedido, así que se elimina la clase de bugs "el ejemplo 3 enseña un formato que el prompt ya no pide" |
 | La versión por defecto es `v2`: la estimación sale en castellano | La convención del README (mensajes al usuario en castellano) alcanza también a la estimación. `v1` (inglés) sigue publicada e inmutable; `v2` usa los mismos datos y la misma aritmética |
 | `total_horas` y `duracion_semanas` los calcula el modelo | Es lo que hace `../session_4/estimator`. Obliga al modelo a comprometerse con un total. Ver §3.4 |
 | Todo corre en Docker: Redis, API y frontend (`docker-compose.yml`, una imagen) | Un solo modo de arranque. Redis queda dentro de la red de Docker; la API y el frontend se publican solo en `127.0.0.1`. Los tests corren fuera, con `uv` |
@@ -144,18 +144,23 @@ propósito: `SolicitudEstimacion` no tiene forma
 hasta que el prompt de WU4 exista.
 
 La estructura de prompts la fija el README y parte de la de `../session_4/estimator`:
-`app/prompts/<use_case>/<version>/` con `system.j2`, `user.j2` y `examples.yaml`,
+`app/prompts/<use_case>/<version>/` con `system.j2`, `user.j2`, `examples.j2` y `examples.yaml`,
 más un `loader.py` con `render_estimation_prompt(request, version="v1")`.
 La versión viaja en el path, no en el nombre del archivo: un `v2/` al lado de `v1/`
 entra sin tocar router ni schemas.
 
 **Diferencia con la referencia:** `session_4/estimator` tiene un `examples.j2` con
-los ejemplos ya escritos como tabla. Acá se reemplazó por datos (`examples.yaml`) y
-macros de presentación en `system.j2`, por tres problemas que tenía el `.j2` fijo:
-el `include` llevaba `v1` escrito en la ruta, los ejemplos mostraban una tabla aunque
-se pidiera `narrative` o `line_items`, y los costes no cuadraban con las tarifas de
-`<scope>`. Qué contiene y qué decide cada archivo (`examples.yaml`, `system.j2`,
-`loader.py`) está en el README, sección *Versionado de prompts*, que es la referencia.
+los ejemplos ya escritos como tabla. Ese archivo tenía tres problemas: el `include`
+llevaba `v1` escrito en la ruta, los ejemplos mostraban una tabla aunque se pidiera
+`narrative` o `line_items`, y los costes no cuadraban con las tarifas de `<scope>`.
+Acá `examples.j2` se mantiene (y `system.j2` lo incluye con `{% include %}`, como
+pide la consigna), pero sin esos problemas: la ruta del `include` usa la versión
+como variable, los datos están en `examples.yaml` y los calcula `loader.py`, y
+`examples.j2` solo los muestra en el formato pedido. Hasta el 4 de octubre de 2026
+la presentación vivía en macros dentro de `system.j2`; moverla a `examples.j2` no
+cambió ningún prompt (los 72 renders de `v1` y `v2` son idénticos byte a byte). Qué
+contiene y qué decide cada archivo está en el README, sección *Versionado de
+prompts*, que es la referencia.
 
 **Lo que cambia cuando llegue WU8, y es más de lo que parece.** No alcanza con
 agregar clases: la forma de la respuesta pasa de `{text: str}` a

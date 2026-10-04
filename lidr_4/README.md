@@ -5,7 +5,7 @@ Servicio IA en FastAPI que estima proyectos de software a partir de un formulari
 A partir de la **Sesión 04** el contrato es deliberadamente estrecho:
 - entrada tipada (`description` + tres enums),
 - salida en texto libre,
-- prompt fuera del código, versionado en `app/prompts/<use_case>/<version>/`: plantillas Jinja2 más un `examples.yaml` con los datos de esa versión.
+- prompt fuera del código, versionado en `app/prompts/<use_case>/<version>/`: plantillas Jinja2 (`system.j2`, `user.j2` y `examples.j2`, que `system.j2` incluye con `{% include %}`) más un `examples.yaml` con los datos de esa versión.
 
 La inteligencia adicional (output estructurado, guardrails, cache semántico) se construye encima de esta base en directo.
 
@@ -14,7 +14,7 @@ La inteligencia adicional (output estructurado, guardrails, cache semántico) se
 | Pieza | Estado |
 |---|---|
 | Contrato de entrada (`EstimationRequest` / `EstimationResponse`) | Hecho (WU2) |
-| Prompts versionados (`system.j2`, `user.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
+| Prompts versionados (`system.j2`, `user.j2`, `examples.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
 | Wrapper LLM (`app/services/llm_wrapper.py`), caché, router `POST /api/v1/estimate`, errores y trazabilidad | Hecho (WU5) |
 | Cliente Streamlit | Hecho (WU6) |
 | Slice de punta a punta: formulario → API → proveedor → caché → formulario | Hecho (WU7) |
@@ -110,7 +110,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
 
 - `test/test_schemas.py` — validaciones del `EstimationRequest` (longitudes, enums, campos obligatorios) y de `Settings` (techo del operador sobre `description`, `LOG_LEVEL`).
 - `test/test_prompts.py` — render de la versión `v1`:
-  - **Plantilla:** `description` dentro de `<project_description>`, bloques condicionales por `output_format` y `detail_level`, `StrictUndefined` falla temprano, una versión inexistente lanza `TemplateNotFound`, el prompt empieza sin líneas en blanco.
+  - **Plantilla:** `description` dentro de `<project_description>`, bloques condicionales por `output_format` y `detail_level`, `StrictUndefined` falla temprano, una versión inexistente lanza `TemplateNotFound`, el prompt empieza sin líneas en blanco, y `system.j2` incluye el `examples.j2` de su propia versión (también en una versión copiada).
   - **Ejemplos:** horas y costes calculados desde las tarifas y redondeados (5 h / 50 €), totales que cuadran con las fases, una fila por línea en los tres formatos, numeración de `line_items` desde 1 en cada ejemplo, resumen de equipo armado con los `label`/`plural` del YAML.
   - **Validación del YAML** (con una versión temporal en `tmp_path`): rol no declarado en `rates` → error; rol sin `label` → error; un rol nuevo aparece en `<scope>`, partidas y resumen sin tocar Python.
   - **Caché:** el YAML se lee y se calcula una sola vez por versión, y cada llamada recibe su propia copia.
@@ -150,9 +150,10 @@ lidr_4/
 │   │   ├── loader.py                  # Carga examples.yaml, aritmética genérica, render
 │   │   └── estimation/
 │   │       ├── v1/                    # estimación en inglés
-│   │       │   ├── system.j2          # rol + reglas + bloques condicionales + macros de presentación
+│   │       │   ├── system.j2          # rol + reglas + bloques condicionales; incluye examples.j2
 │   │       │   ├── user.j2            # bloque <project_description>
-│   │       │   └── examples.yaml      # roles (label, plural, tarifa), redondeo, few-shot
+│   │       │   ├── examples.j2        # presentación de los few-shot según output_format y detail_level
+│   │       │   └── examples.yaml      # roles (label, plural, tarifa), redondeo, datos de los few-shot
 │   │       └── v2/                    # la misma estimación en castellano (versión por defecto)
 │   └── services/
 │       ├── cache.py                   # Caché exact-match de estimaciones (sobre app/cache.py)
@@ -180,12 +181,13 @@ lidr_4/
 
 La estructura `app/prompts/<use_case>/<version>/` no es opcional: `v1/` ya existe desde el primer día porque versionar un prompt es la forma más barata de habilitar A/B testing y rollback en producción. Cuando una iteración del prompt se cocina, se crea `v2/` al lado y `render_estimation_prompt(request, version="v2")` lo recoge sin tocar router ni schemas.
 
-Cada versión tiene tres archivos, con responsabilidades separadas:
+Cada versión tiene cuatro archivos, con responsabilidades separadas:
 
 | Archivo | Qué contiene | Qué decide |
 |---|---|---|
 | `examples.yaml` | Roles (`label`, `plural`, `eur_per_hour`), redondeo (`hours_base`, `cost_base`), `productive_hours_per_week` y los ejemplos few-shot (fases con equipo, semanas y confianza) | Los **datos** |
-| `system.j2` | Rol del modelo, reglas, formatos de salida, niveles de detalle y las macros que muestran los ejemplos | Toda la **presentación**: etiquetas, plurales, resumen de equipo, maquetación por `output_format` |
+| `system.j2` | Rol del modelo, reglas, formatos de salida y niveles de detalle. Al final incluye `examples.j2` con `{% include "estimation/" ~ version ~ "/examples.j2" %}`: la versión es una variable, así que una versión copiada incluye sus propios ejemplos y no los de la original | Las **instrucciones** al modelo |
+| `examples.j2` | Las macros que muestran los ejemplos few-shot | La **presentación** de los ejemplos: etiquetas, plurales, resumen de equipo, maquetación por `output_format` y `detail_level` |
 | `user.j2` | El bloque `<project_description>` | La entrada del usuario |
 
 `loader.py` es común a todas las versiones y solo hace **aritmética genérica**: horas por rol (semanas × horas productivas × personas, redondeado), coste (horas × tarifa, redondeado), totales y personas máximas por rol. No decide cómo se muestra nada. Valida el YAML al cargarlo (todo rol usado en un ejemplo tiene que estar en `rates`, y cada rol tiene que declarar `label`, `plural` y `eur_per_hour`) y cachea el resultado por versión.
@@ -193,7 +195,7 @@ Cada versión tiene tres archivos, con responsabilidades separadas:
 Consecuencias:
 
 - Agregar un rol es solo editar `examples.yaml`: aparece en `<scope>`, en las partidas y en el resumen del equipo. El orden de `rates` es el orden en que se muestra.
-- Una `v2/` necesita su propio `examples.yaml` con esa misma forma.
+- Una versión nueva necesita sus propios `examples.yaml` y `examples.j2`: se copian de la anterior y se cambia lo que haga falta.
 - Las versiones publicadas son inmutables: corregir `v1` es sacar `v2`, no editar `v1` (ver `PROMPT_VERSION` en `.env.example`).
 
 Versiones publicadas:
