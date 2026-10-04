@@ -25,22 +25,32 @@ El detalle de cada unidad está en [`PLAN.md`](PLAN.md) §6.
 
 ## Cómo levantar
 
+Todo corre en Docker: Redis, la API y el frontend Streamlit (`docker-compose.yml`).
+
 ```bash
 cd lidr_4
-cp .env.example .env  # completá las API keys del modelo primario y del de respaldo
-uv sync
-uv run python -m app            # puerto APP_PORT (default 8001)
-uv run python -m app --reload   # con recarga
+cp .env.example .env            # completá las API keys del modelo primario y del de respaldo
+docker compose up --build -d    # construir y levantar los tres servicios
+docker compose logs -f api      # logs de la API (trazabilidad, avisos)
+docker compose down             # parar todo
 ```
 
-`python -m app` usa `APP_PORT` de Settings. `uvicorn app.main:app` a secas usa el 8000, que suele estar tomado. El servicio queda en `http://localhost:8001` (Swagger en `/docs`, health en `/health`).
+| Servicio | Dirección | Notas |
+|---|---|---|
+| API | `http://localhost:8001` | Swagger en `/docs`, health en `/health` |
+| Frontend | `http://localhost:8501` | Formulario Streamlit |
+| Redis | solo dentro de Docker | Caché de estimaciones; no se publica hacia afuera |
+
+Los puertos se publican solo en `127.0.0.1`: nada queda accesible desde la red local. Las claves salen del `.env` en tiempo de ejecución y nunca entran a la imagen (`.dockerignore`). Dentro de Docker los servicios se alcanzan por su nombre, así que el compose pisa dos valores del `.env`: `REDIS_URL=redis://redis:6379/0` y `ESTIMATOR_API_BASE_URL=http://api:8001`.
+
+Un cambio de código requiere reconstruir: `docker compose up --build -d`. Un cambio en `.env` basta con reiniciar: `docker compose up -d` (recrea los contenedores cuya configuración cambió).
 
 El servicio arranca aunque falten las API keys. Con la configuración por defecto:
 
 - **Sin `OPENAI_API_KEY`** (primario) no hay estimaciones: `/health` informa `llm_configured: false` y `POST /api/v1/estimate` responde 503 nombrando la variable.
 - **Sin `ANTHROPIC_API_KEY`** (respaldo) las estimaciones funcionan solo con el primario. Se avisa en tres lugares: el log (evento `respaldo_no_disponible`), `/health` (`fallback_configured: false` y `avisos`) y cada respuesta del endpoint (`avisos`), que Streamlit muestra encima de la estimación.
 
-Redis es opcional: con `REDIS_URL` vacío la caché queda desactivada, y si Redis no responde el servicio sigue sin caché (fail soft).
+Redis es opcional para la API: si no responde, el servicio sigue sin caché (fail soft), y con `REDIS_URL` vacío la caché queda desactivada.
 
 ### Probar el endpoint
 
@@ -59,11 +69,13 @@ Respuesta:
 
 ```json
 {
-  "text": "| phase | duration_weeks | cost_eur | confidence_pct | …",
+  "text": "| Fase | Semanas | Coste (EUR) | Confianza (%) | …",
   "prompt_version": "v2",
   "avisos": []
 }
 ```
+
+`text` llega sin las etiquetas `<estimation>` que envuelven los ejemplos del prompt: el modelo a veces las copia en su respuesta, y el endpoint las quita antes de devolverla.
 
 Errores posibles:
 
@@ -78,20 +90,17 @@ En 502 y 504 el detalle real del proveedor no llega al cliente: queda en el log 
 
 ### Cliente Streamlit
 
-El cliente Streamlit es un formulario que construye el JSON y muestra el `text` recibido. Consume la API por HTTP:
+El cliente Streamlit es un formulario que construye el JSON y muestra el `text` recibido. Consume la API por HTTP y queda en `http://localhost:8501` al levantar el compose.
 
-```bash
-cd lidr_4
-uv run streamlit run streamlit_app.py
-# Abrir http://localhost:8501
-```
-
-La URL del servicio se lee de `ESTIMATOR_API_BASE_URL` (default `http://localhost:8001`).
+La URL de la API se lee de `ESTIMATOR_API_BASE_URL`; en Docker es `http://api:8001`.
 
 ## Cómo testar
 
+Los tests corren fuera de Docker, con las dependencias de desarrollo:
+
 ```bash
 cd lidr_4
+uv sync
 uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
@@ -155,6 +164,9 @@ lidr_4/
 │   ├── test_cache.py
 │   ├── test_estimate_endpoint.py
 │   └── test_frontend.py
+├── Dockerfile                         # Imagen única para la API y el frontend (dependencias de uv.lock)
+├── docker-compose.yml                 # Redis + API + frontend
+├── .dockerignore                      # Deja afuera de la imagen el .env, los tests y los caches
 ├── streamlit_app.py                   # Formulario que consume /api/v1/estimate
 ├── PLAN.md                            # Plan de construcción y decisiones
 └── pyproject.toml
@@ -219,15 +231,15 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `LLM_MAX_RETRIES` | `2` | Reintentos del Router antes de pasar al respaldo |
 | `LLM_MAX_TOKENS` | `4000` | Tope de tokens de la respuesta |
 | `PROMPT_VERSION` | `v2` | Versión de la plantilla de prompt. Hoy no invalida la caché (su clave ya incluye el prompt completo); con el caché semántico de WU10 será su mecanismo de invalidación |
-| `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada |
+| `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada. En Docker lo fija el compose: `redis://redis:6379/0` |
 | `CACHE_TTL` | `86400` | Segundos |
 | `DESCRIPCION_MIN_CHARS` / `DESCRIPCION_MAX_CHARS` | `20` / `2000` | Techo del operador; solo puede estrechar el contrato |
 | `APP_ENV` | `local` | Se muestra en `/health` |
 | `LOG_LEVEL` | `INFO` | Nivel de los logs propios. Las librerías HTTP, el SDK y LiteLLM quedan fijas en `WARNING`: ningún nivel escribe el prompt |
-| `APP_PORT` | `8001` | Puerto de `python -m app` |
-| `ESTIMATOR_API_BASE_URL` | `http://localhost:8001` | Lo lee el cliente Streamlit |
+| `APP_PORT` | `8001` | Puerto de `python -m app` (fuera de Docker; el compose usa 8001) |
+| `ESTIMATOR_API_BASE_URL` | `http://localhost:8001` | Lo lee el cliente Streamlit. En Docker lo fija el compose: `http://api:8001` |
 
-`get_settings()` es un singleton cacheado con `lru_cache`: cualquier cambio en `.env` requiere reiniciar el servicio (no basta con `--reload`).
+`get_settings()` es un singleton cacheado con `lru_cache`: cualquier cambio en `.env` requiere reiniciar el servicio (`docker compose up -d`).
 
 ---
 

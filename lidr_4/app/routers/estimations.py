@@ -17,6 +17,8 @@ es algo que el cliente pueda resolver.
 
 from __future__ import annotations
 
+import re
+
 import litellm
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -27,6 +29,11 @@ from app.schemas.estimation import EstimationRequest, EstimationResponse
 from app.tracing import emitir
 
 router = APIRouter(prefix="/api/v1", tags=["estimation"])
+
+# Los ejemplos del prompt envuelven cada estimación en <estimation>…</estimation>,
+# y el modelo a veces copia esas etiquetas en su respuesta. Son estructura del
+# prompt, no contenido: se quitan antes de devolver el texto al cliente.
+_ETIQUETAS_DEL_PROMPT = re.compile(r"</?estimation>")
 
 MENSAJE_TIMEOUT = (
     "El proveedor de IA tardó demasiado en responder. Volvé a intentarlo en unos minutos."
@@ -82,10 +89,15 @@ async def estimate(
         ) from None
 
     return EstimationResponse(
-        text=result.content,
+        text=_quitar_etiquetas_del_prompt(result.content),
         prompt_version=result.prompt_version,
         avisos=list(llm_wrapper.avisos),
     )
+
+
+def _quitar_etiquetas_del_prompt(texto: str) -> str:
+    """Quita las etiquetas <estimation> que el modelo copia de los ejemplos del prompt."""
+    return _ETIQUETAS_DEL_PROMPT.sub("", texto).strip()
 
 
 def _registrar_fallo(exc: Exception, codigo: int) -> None:

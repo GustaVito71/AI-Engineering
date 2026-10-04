@@ -32,10 +32,14 @@ import streamlit as st
 DEFAULT_API_BASE = os.environ.get("ESTIMATOR_API_BASE_URL", "http://localhost:8001")
 
 # Límites de longitud de la descripción, copiados del contrato de la API
-# (`EstimationRequest`: 20 a 2000 caracteres). El formulario los usa para cortar
-# el texto en el máximo y avisar si no llega al mínimo, sin esperar a que la API
+# (`EstimationRequest`: 20 a 2000 caracteres). El formulario los usa para avisar
+# si el texto no llega al mínimo o pasa del máximo, sin esperar a que la API
 # responda 422. Están copiados y no importados porque el frontend es un cliente
 # aparte que no depende del paquete `app`.
+#
+# El máximo NO se pasa como `max_chars` al campo de texto: con ese tope, Streamlit
+# descarta entero un pegado que lo supere, sin ningún aviso, y el campo queda
+# vacío. Sin tope se pega todo y `_error_de_longitud` explica qué sobra.
 DESCRIPTION_MIN_CHARS = 20
 DESCRIPTION_MAX_CHARS = 2000
 
@@ -78,6 +82,24 @@ def _detail_texto(detail: object) -> str:
     if isinstance(detail, list):
         return "\n".join(str(item.get("msg", item)) for item in detail)
     return str(detail)
+
+
+def _error_de_longitud(descripcion: str) -> str | None:
+    """Mensaje de error si la descripción está fuera de los límites, o None si es válida.
+
+    Recibe el texto ya sin espacios en los extremos, que es lo que se envía a la API.
+    """
+    largo = len(descripcion)
+    if largo < DESCRIPTION_MIN_CHARS:
+        return (
+            f"La descripción necesita al menos {DESCRIPTION_MIN_CHARS} caracteres (tiene {largo})."
+        )
+    if largo > DESCRIPTION_MAX_CHARS:
+        return (
+            f"La descripción admite hasta {DESCRIPTION_MAX_CHARS} caracteres (tiene {largo}). "
+            "Acortala antes de estimar."
+        )
+    return None
 
 
 def _estimar(
@@ -143,7 +165,7 @@ def main() -> None:
                 st.sidebar.warning(aviso)
         except httpx.HTTPError:
             st.sidebar.error(
-                f"No se pudo conectar a {api_base}. Levantá la API con:\n\n`uv run python -m app`"
+                f"No se pudo conectar a {api_base}. Levantá los servicios con:\n\n`docker compose up -d`"
             )
 
     st.title("📋 Estimá un proyecto")
@@ -169,7 +191,6 @@ def main() -> None:
         description = st.text_area(
             "Descripción del proyecto",
             height=180,
-            max_chars=DESCRIPTION_MAX_CHARS,
             placeholder="¿Qué hay que construir, para quién y con qué requisitos?...",
             key="description_entrada",
         )
@@ -201,11 +222,9 @@ def main() -> None:
         return
 
     limpio = description.strip()
-    if len(limpio) < DESCRIPTION_MIN_CHARS:
-        st.error(
-            f"La descripción necesita al menos {DESCRIPTION_MIN_CHARS} caracteres "
-            f"(tiene {len(limpio)})."
-        )
+    error = _error_de_longitud(limpio)
+    if error:
+        st.error(error)
         return
 
     payload = {
@@ -220,7 +239,9 @@ def main() -> None:
         st.error(_detail_texto(exc.detail))
         return
     except httpx.HTTPError:
-        st.error(f"No se pudo conectar a {api_base}. Levantá la API con:\n\n`uv run python -m app`")
+        st.error(
+            f"No se pudo conectar a {api_base}. Levantá los servicios con:\n\n`docker compose up -d`"
+        )
         return
 
     st.session_state["resultado"] = {
