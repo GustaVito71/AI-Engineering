@@ -36,6 +36,7 @@ conoce el problema que resuelven.
 |---|---|
 | `EstimationRequest` alimenta la UI; el contrato del LLM aparece en WU8 | La UI puede cambiar sin tocar el prompt ni la salida del modelo |
 | Los few-shot se versionan con el prompt: datos en `v1/examples.yaml`, presentación en macros de `v1/system.j2` | Una sola fuente por versión. Los ejemplos se maquetan según el `output_format` pedido, así que se elimina la clase de bugs "el ejemplo 3 enseña un formato que el prompt ya no pide" |
+| La versión por defecto es `v2`: la estimación sale en castellano | La convención del README (mensajes al usuario en castellano) alcanza también a la estimación. `v1` (inglés) sigue publicada e inmutable; `v2` usa los mismos datos y la misma aritmética |
 | `total_horas` y `duracion_semanas` los calcula el modelo | Es lo que hace `../session_4/estimator`. Obliga al modelo a comprometerse con un total. Ver §3.4 |
 | LiteLLM `Router` es el **único** dueño de retry y fallback | Dos niveles de retry se multiplican y su composición es imposible de razonar |
 | Gateway **async** con `router.acompletion` | El endpoint es async; un cliente sync bloquea el event loop |

@@ -104,7 +104,7 @@ def test_returns_200_with_text_and_prompt_version(cliente) -> None:
     assert r.status_code == 200
     assert r.json() == {
         "text": "| phase | duration_weeks | cost_eur | confidence_pct |",
-        "prompt_version": "v1",
+        "prompt_version": "v2",
         "avisos": [],
     }
 

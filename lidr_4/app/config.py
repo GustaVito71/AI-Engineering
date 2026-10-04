@@ -138,7 +138,7 @@ class Settings(BaseSettings):
 
     # --- Capa 2. Qué plantilla se usa. Ver el docstring sobre su relación
     # con la caché.
-    prompt_version: str = "v1"
+    prompt_version: str = "v2"
 
     # --- Caché. REDIS_URL vacío = caché desactivado, sin tocar código.
     redis_url: str = "redis://localhost:6379/0"

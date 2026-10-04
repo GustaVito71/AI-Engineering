@@ -2,14 +2,15 @@
 
 El módulo de Streamlit importa `st` pero solo lo usa dentro de `main()`, que
 Streamlit ejecuta como `__main__`. Importar el módulo desde pytest define las
-funciones puras (`_estimar`, `_detail_texto`) y no ejecuta nada de la UI: por
-eso estos tests corren sin runtime de Streamlit y sin red.
+funciones puras (`_estimar`, `_detail_texto`, `_error_de_longitud`) y no
+ejecuta nada de la UI: por eso estos tests corren sin runtime de Streamlit y
+sin red.
 
 `_estimar` recibe un `client` inyectado (httpx.MockTransport), así que el test
 no necesita servidor. Lo que se verifica es el contrato del cliente contra el
 de `EstimationRequest`/`EstimationResponse` del backend, que es la parte que
 se rompe en silencio: un `payload` con una clave mal escrita no falla en el
-cliente, aparece como un 422 del servidor con un mensaje que no ajuda.
+cliente, aparece como un 422 del servidor con un mensaje que no ayuda.
 """
 
 from __future__ import annotations
@@ -17,7 +18,14 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from streamlit_app import _ApiError, _detail_texto, _estimar
+from streamlit_app import (
+    DESCRIPTION_MAX_CHARS,
+    DESCRIPTION_MIN_CHARS,
+    _ApiError,
+    _detail_texto,
+    _error_de_longitud,
+    _estimar,
+)
 
 PAYLOAD_VALIDO = {
     "description": "A small B2B SaaS to manage employee equipment loans across teams.",
@@ -148,3 +156,27 @@ def test_detail_texto_aplana_una_lista_de_msg():
 
 def test_detail_texto_pasa_escalares():
     assert _detail_texto("texto plano") == "texto plano"
+
+
+# --- Longitud de la descripción ---------------------------------------------------
+
+
+@pytest.mark.parametrize("largo", [DESCRIPTION_MIN_CHARS, 500, DESCRIPTION_MAX_CHARS])
+def test_longitud_dentro_de_los_limites_no_da_error(largo):
+    assert _error_de_longitud("x" * largo) is None
+
+
+def test_descripcion_corta_avisa_el_minimo():
+    error = _error_de_longitud("x" * (DESCRIPTION_MIN_CHARS - 1))
+    assert error is not None
+    assert f"al menos {DESCRIPTION_MIN_CHARS}" in error
+    assert f"tiene {DESCRIPTION_MIN_CHARS - 1}" in error
+
+
+def test_descripcion_larga_avisa_el_maximo():
+    """Un texto pegado de más de 2000 caracteres llega entero al formulario (sin
+    `max_chars`) y el usuario ve cuánto sobra, en vez de un campo vacío."""
+    error = _error_de_longitud("x" * 3150)
+    assert error is not None
+    assert f"hasta {DESCRIPTION_MAX_CHARS}" in error
+    assert "tiene 3150" in error
