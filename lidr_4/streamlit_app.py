@@ -102,6 +102,22 @@ def _error_de_longitud(descripcion: str) -> str | None:
     return None
 
 
+def _armar_payload(
+    descripcion: str, project_type: str, detail_level: str, output_format: str
+) -> dict:
+    """El cuerpo de `POST /api/v1/estimate` a partir de los campos del formulario.
+
+    Fuera de `main()` para que los tests usen el mismo armado que la interfaz: una
+    clave mal escrita acá rompe el contrato con la API sin ningún error local.
+    """
+    return {
+        "description": descripcion,
+        "project_type": project_type,
+        "detail_level": detail_level,
+        "output_format": output_format,
+    }
+
+
 def _estimar(
     api_base: str,
     payload: dict,
@@ -227,12 +243,7 @@ def main() -> None:
         st.error(error)
         return
 
-    payload = {
-        "description": limpio,
-        "project_type": project_type,
-        "detail_level": detail_level,
-        "output_format": output_format,
-    }
+    payload = _armar_payload(limpio, project_type, detail_level, output_format)
     try:
         texto, prompt_version, avisos = _estimar(api_base, payload)
     except _ApiError as exc:

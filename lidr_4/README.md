@@ -17,7 +17,8 @@ La inteligencia adicional (output estructurado, guardrails, cache semántico) se
 | Prompts versionados (`system.j2`, `user.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
 | Wrapper LLM (`app/services/llm_wrapper.py`), caché, router `POST /api/v1/estimate`, errores y trazabilidad | Hecho (WU5) |
 | Cliente Streamlit | Hecho (WU6) |
-| Salida estructurada, guardrails, caché semántico | Pendiente (WU7–WU10) |
+| Slice de punta a punta: formulario → API → proveedor → caché → formulario | Hecho (WU7) |
+| Salida estructurada, guardrails, caché semántico | Pendiente (WU8–WU10) |
 
 El detalle de cada unidad está en [`PLAN.md`](PLAN.md) §6.
 
@@ -115,6 +116,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Caché:** el YAML se lee y se calcula una sola vez por versión, y cada llamada recibe su propia copia.
 - `test/test_prompts_v2.py` — render de la versión `v2`: las 36 combinaciones sin texto en inglés, regla de idioma en castellano, tarifas con coma decimal, tabla, elementos de línea y narrativo con números en formato castellano, concordancia de singular y plural, y la misma aritmética que `v1`.
 - `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `avisos` de la respuesta llegan al cliente (vacíos si la API no los envía).
+- `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_armar_payload` + `_estimar`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor).
 
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `avisos`.
@@ -163,7 +165,9 @@ lidr_4/
 │   ├── test_llm_wrapper.py
 │   ├── test_cache.py
 │   ├── test_estimate_endpoint.py
-│   └── test_frontend.py
+│   ├── test_logging.py
+│   ├── test_frontend.py
+│   └── test_e2e.py
 ├── Dockerfile                         # Imagen única para la API y el frontend (dependencias de uv.lock)
 ├── docker-compose.yml                 # Redis + API + frontend
 ├── .dockerignore                      # Deja afuera de la imagen el .env, los tests y los caches
