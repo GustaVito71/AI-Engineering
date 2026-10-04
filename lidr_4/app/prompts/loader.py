@@ -21,6 +21,7 @@ Reparto de responsabilidades:
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from functools import lru_cache
 from math import ceil
@@ -38,6 +39,21 @@ _BASE_DIR = Path(__file__).resolve().parent
 # YAML, para que uno mal formado falle en la primera request y no a mitad de un
 # render.
 _ROLE_FIELDS = ("label", "plural", "eur_per_hour")
+
+
+def versiones_disponibles() -> list[str]:
+    """Versiones de prompt publicadas: los directorios ``vN/`` con un ``system.j2``.
+
+    Ordenadas por número (v2 antes que v10). El endpoint las usa para validar
+    ``?prompt_version=`` antes de armar una ruta con lo que mandó el cliente.
+    """
+    raiz = _BASE_DIR / "estimation"
+    versiones = [
+        d.name
+        for d in raiz.iterdir()
+        if d.is_dir() and re.fullmatch(r"v\d+", d.name) and (d / "system.j2").is_file()
+    ]
+    return sorted(versiones, key=lambda v: int(v[1:]))
 
 
 def _round_up(n: float, base: int) -> int:

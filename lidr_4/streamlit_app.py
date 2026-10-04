@@ -118,10 +118,38 @@ def _armar_payload(
     }
 
 
+def _leer_health(api_base: str, client: httpx.Client | None = None) -> dict | None:
+    """El JSON de `/health`, o None si la API no responde o no devuelve JSON."""
+    cliente = client if client is not None else httpx.Client()
+    try:
+        return cliente.get(f"{api_base}/health", timeout=3.0).json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    finally:
+        if client is None:
+            cliente.close()
+
+
+def _opciones_de_version(health: dict | None) -> list[tuple[str, str | None]]:
+    """Opciones del selector de versión: `(etiqueta, valor de ?prompt_version=)`.
+
+    La primera es siempre la predeterminada, con valor None: no se manda el
+    parámetro y decide `PROMPT_VERSION` en el servicio. Las demás salen de
+    `/health` (`prompt_versions`); si la API no respondió, queda solo la primera
+    y el formulario funciona igual.
+    """
+    if not health:
+        return [("Predeterminada", None)]
+    configurada = health.get("prompt_version")
+    etiqueta = f"Predeterminada ({configurada})" if configurada else "Predeterminada"
+    return [(etiqueta, None)] + [(v, v) for v in health.get("prompt_versions") or []]
+
+
 def _estimar(
     api_base: str,
     payload: dict,
     client: httpx.Client | None = None,
+    prompt_version: str | None = None,
 ) -> tuple[str, str, list[str]]:
     """Envía el formulario a `/api/v1/estimate` y devuelve `(text, prompt_version, avisos)`.
 
@@ -131,7 +159,8 @@ def _estimar(
     200 lanza `_ApiError` con el código HTTP real y el `detail` parseado (el
     422 de FastAPI llega como lista de `{msg, ...}`, que `_detail_texto`
     aplana). `client` lo inyectan los tests (httpx.MockTransport); la UI deja
-    que la función cree el suyo.
+    que la función cree el suyo. Con `prompt_version` se pide esa versión del
+    prompt (`?prompt_version=`); sin él, la API usa la configurada.
     """
     propio = client is None
     cliente = client if client is not None else httpx.Client()
@@ -139,6 +168,7 @@ def _estimar(
         respuesta = cliente.post(
             f"{api_base}/api/v1/estimate",
             json=payload,
+            params={"prompt_version": prompt_version} if prompt_version else None,
             timeout=None,
         )
         if respuesta.status_code != 200:
@@ -164,9 +194,17 @@ def main() -> None:
     )
     api_base = st.sidebar.text_input("URL de la API", value=DEFAULT_API_BASE)
 
+    # /health se lee una vez por URL y se guarda en la sesión: alimenta el
+    # selector de versión sin consultar la API en cada interacción. "Probar
+    # conexión" lo vuelve a leer.
+    if st.session_state.get("health_de") != api_base:
+        st.session_state["health"] = _leer_health(api_base)
+        st.session_state["health_de"] = api_base
+
     if st.sidebar.button("Probar conexión", use_container_width=True):
-        try:
-            health = httpx.get(f"{api_base}/health", timeout=3.0).json()
+        st.session_state["health"] = _leer_health(api_base)
+        health = st.session_state["health"]
+        if health is not None:
             st.sidebar.success(
                 f"Conectado: {health.get('primary_model')} · {health.get('fallback_model')}"
                 f"{' · key ok' if health.get('llm_configured') else ' · FALTA API KEY'}"
@@ -179,10 +217,18 @@ def main() -> None:
             # Avisos que no impiden estimar (por ejemplo, respaldo no disponible).
             for aviso in health.get("avisos") or []:
                 st.sidebar.warning(aviso)
-        except httpx.HTTPError:
+        else:
             st.sidebar.error(
                 f"No se pudo conectar a {api_base}. Levantá los servicios con:\n\n`docker compose up -d`"
             )
+
+    opciones = _opciones_de_version(st.session_state.get("health"))
+    _etiqueta, prompt_version_elegida = st.sidebar.selectbox(
+        "Versión del prompt",
+        options=opciones,
+        format_func=lambda opcion: opcion[0],
+        help="Predeterminada usa la versión configurada en el servicio (PROMPT_VERSION).",
+    )
 
     st.title("📋 Estimá un proyecto")
     st.caption(
@@ -245,7 +291,9 @@ def main() -> None:
 
     payload = _armar_payload(limpio, project_type, detail_level, output_format)
     try:
-        texto, prompt_version, avisos = _estimar(api_base, payload)
+        texto, prompt_version, avisos = _estimar(
+            api_base, payload, prompt_version=prompt_version_elegida
+        )
     except _ApiError as exc:
         st.error(_detail_texto(exc.detail))
         return

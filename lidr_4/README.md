@@ -78,11 +78,14 @@ Respuesta:
 
 `text` llega sin las etiquetas `<estimation>` que envuelven los ejemplos del prompt: el modelo a veces las copia en su respuesta, y el endpoint las quita antes de devolverla.
 
+Para usar otra versión publicada del prompt sin reiniciar el servicio, se agrega `?prompt_version=` a la URL (por ejemplo, `http://localhost:8001/api/v1/estimate?prompt_version=v1`). Sin el parámetro se usa `PROMPT_VERSION`. `prompt_version` en la respuesta indica siempre la versión que se usó.
+
 Errores posibles:
 
 | Código | Cuándo | `detail` |
 |---|---|---|
 | 422 | La entrada no cumple el contrato (longitud de `description`, valores de los enums) | Lista de errores de validación de Pydantic |
+| 422 | `?prompt_version=` pide una versión que no existe | *"La versión de prompt 'v9' no existe. Versiones disponibles: v1, v2."* |
 | 503 | Falta la API key del modelo primario | Nombra la variable, por ejemplo *"Falta OPENAI_API_KEY para el modelo primario openai/gpt-4o-mini."* |
 | 504 | El proveedor no respondió a tiempo (agotados los reintentos y el respaldo) | Mensaje genérico en español |
 | 502 | Cualquier otro fallo del proveedor | Mensaje genérico en español |
@@ -94,6 +97,8 @@ En 502 y 504 el detalle real del proveedor no llega al cliente: queda en el log 
 El cliente Streamlit es un formulario que construye el JSON y muestra el `text` recibido. Consume la API por HTTP y queda en `http://localhost:8501` al levantar el compose.
 
 La URL de la API se lee de `ESTIMATOR_API_BASE_URL`; en Docker es `http://api:8001`.
+
+En la barra lateral, **Versión del prompt** elige con qué versión se estima: "Predeterminada (v2)" deja que decida `PROMPT_VERSION` en el servicio, y cada versión publicada se pide con `?prompt_version=`. La lista sale de `prompt_versions` en `/health`, así que una versión nueva aparece sola. Si la API no respondía al abrir la página, queda solo "Predeterminada"; **Probar conexión** la vuelve a leer.
 
 ## Cómo testar
 
@@ -115,8 +120,8 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Validación del YAML** (con una versión temporal en `tmp_path`): rol no declarado en `rates` → error; rol sin `label` → error; un rol nuevo aparece en `<scope>`, partidas y resumen sin tocar Python.
   - **Caché:** el YAML se lee y se calcula una sola vez por versión, y cada llamada recibe su propia copia.
 - `test/test_prompts_v2.py` — render de la versión `v2`: las 36 combinaciones sin texto en inglés, regla de idioma en castellano, tarifas con coma decimal, tabla, elementos de línea y narrativo con números en formato castellano, concordancia de singular y plural, y la misma aritmética que `v1`.
-- `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `avisos` de la respuesta llegan al cliente (vacíos si la API no los envía).
-- `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_armar_payload` + `_estimar`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor).
+- `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `avisos` de la respuesta llegan al cliente (vacíos si la API no los envía). Versión del prompt: la elegida viaja en `?prompt_version=` y la predeterminada no manda el parámetro; las opciones salen de `/health` y, si la API no responde o es anterior a `prompt_versions`, queda solo la predeterminada.
+- `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_armar_payload` + `_estimar`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor). Incluye el selector de versión: las opciones salen del `/health` real y la versión elegida decide el prompt que recibe el proveedor.
 
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `avisos`.
@@ -126,7 +131,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Coste:** si `completion_cost` falla, el coste es 0 y la respuesta sale igual.
   - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y con acierto de caché; el prompt nunca va al log.
 - `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con el prompt, entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
-- `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 si falta la clave del primario (sin filtrar la clave configurada), estimación con aviso si falta la del respaldo, `/health` con y sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log.
+- `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 si falta la clave del primario (sin filtrar la clave configurada), estimación con aviso si falta la del respaldo, `/health` con y sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log; `?prompt_version=` (sin query se usa `PROMPT_VERSION`, la query la pisa, una versión inexistente o con `..` da 422 sin llamar al modelo); `/health` lista las versiones disponibles (`prompt_versions`).
 - `test/test_logging.py` — los loggers de LiteLLM: con `LOG_LEVEL=DEBUG` quedan en `WARNING` y una estimación completa no deja la descripción del cliente en la salida; sus advertencias salen una sola vez, con el formato de structlog, y sin claves de API.
 
 Los tests no dependen del `.env` ni de las variables de entorno de quien los corre: `test/conftest.py` los aísla y cada test fija lo que usa. Los que dependen del proveedor corren dos veces, con OpenAI y con Anthropic como primario.
@@ -204,6 +209,8 @@ Versiones publicadas:
 |---|---|---|
 | `v1` | Inglés | Instrucciones, ejemplos y etiquetas en inglés; números como `29,850` |
 | `v2` (por defecto) | Castellano | Mismos datos y la misma aritmética que `v1`; instrucciones, ejemplos y etiquetas en castellano; números como `29.850` y `62,50`; registro impersonal |
+
+La versión se elige por petición con `?prompt_version=` o, si no se indica, con `PROMPT_VERSION`. El endpoint solo acepta versiones publicadas (un directorio `vN/` con `system.j2`); el valor nunca llega a armar una ruta de archivo sin haberse comparado antes con esa lista.
 
 Lo que vive **fuera** de la versión (en código): el contrato (`EstimationRequest`), el switch de versión, el wrapper y la aritmética de los ejemplos (`loader.py`). Todo lo demás (rol del modelo, reglas, ejemplos, tarifas, formatos de salida, niveles de detalle) vive en `v1/`. Si para cambiar el comportamiento del modelo hay que tocar Python, la separación está rota.
 

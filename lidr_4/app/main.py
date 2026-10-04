@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 
 from .cache import cerrar_cliente_cache, crear_cliente_cache
 from .config import LLMConfigurationError, Settings, get_settings
+from .prompts.loader import versiones_disponibles
 from .routers.estimations import router as estimations_router
 from .services.cache import crear_estimation_cache
 from .services.llm_wrapper import aviso_sin_respaldo
@@ -183,6 +184,9 @@ def create_app() -> FastAPI:
             "primary_model": settings.primary_model,
             "fallback_model": settings.fallback_model,
             "prompt_version": settings.prompt_version,
+            # Las que acepta `?prompt_version=` en el endpoint: el frontend arma
+            # su selector con esta lista en vez de tener una escrita a mano.
+            "prompt_versions": versiones_disponibles(),
             "cache_enabled": bool(settings.redis_url),
             "avisos": [aviso] if aviso else [],
         }

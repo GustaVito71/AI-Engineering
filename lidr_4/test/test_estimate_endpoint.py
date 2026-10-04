@@ -61,8 +61,10 @@ class _WrapperFalso:
         self._error = error
         self.avisos = avisos
         self._contenido = contenido
+        self.llamadas: list[dict] = []
 
-    async def estimate(self, *, prompt_version: str, **_kwargs) -> LLMCallResult:
+    async def estimate(self, *, prompt_version: str, **kwargs) -> LLMCallResult:
+        self.llamadas.append({"prompt_version": prompt_version, **kwargs})
         if self._error is not None:
             raise self._error
         return LLMCallResult(
@@ -136,6 +138,74 @@ def test_texto_sin_etiquetas_llega_igual(cliente) -> None:
     with _con_wrapper(cliente, _WrapperFalso(contenido=texto)) as c:
         r = c.post("/api/v1/estimate", json=BODY)
     assert r.json()["text"] == texto
+
+
+# --- Versión del prompt por query ---------------------------------------------------
+
+
+def test_sin_query_usa_la_version_configurada(cliente) -> None:
+    wrapper = _WrapperFalso()
+    with _con_wrapper(cliente, wrapper) as c:
+        r = c.post("/api/v1/estimate", json=BODY)
+    assert r.json()["prompt_version"] == "v2"
+    assert "Responde siempre en castellano" in wrapper.llamadas[0]["system_prompt"]
+
+
+def test_la_query_elige_otra_version(cliente) -> None:
+    """Con ?prompt_version=v1 se renderiza el prompt de v1 y la respuesta lo dice."""
+    wrapper = _WrapperFalso()
+    with _con_wrapper(cliente, wrapper) as c:
+        r = c.post("/api/v1/estimate?prompt_version=v1", json=BODY)
+    assert r.status_code == 200
+    assert r.json()["prompt_version"] == "v1"
+    [llamada] = wrapper.llamadas
+    assert llamada["prompt_version"] == "v1"
+    assert "Always answer in English" in llamada["system_prompt"]
+
+
+@pytest.mark.parametrize(
+    ("query", "esperada"),
+    [("", "v1"), ("?prompt_version=v2", "v2")],
+    ids=["sin-query-usa-PROMPT_VERSION", "la-query-gana"],
+)
+def test_query_y_configuracion(cliente, query, esperada) -> None:
+    """Con PROMPT_VERSION=v1 configurado: sin query se usa v1; la query lo pisa."""
+    c = cliente(PROMPT_VERSION="v1")
+    c.app.dependency_overrides[get_llm_wrapper] = lambda: _WrapperFalso()
+    with c:
+        r = c.post(f"/api/v1/estimate{query}", json=BODY)
+    assert r.json()["prompt_version"] == esperada
+
+
+@pytest.mark.parametrize("pedida", ["v9", "../v1", "v1/../v2", "V1", ""])
+def test_una_version_que_no_existe_es_422(cliente, pedida) -> None:
+    wrapper = _WrapperFalso()
+    with _con_wrapper(cliente, wrapper) as c:
+        r = c.post("/api/v1/estimate", params={"prompt_version": pedida}, json=BODY)
+    assert r.status_code == 422
+    assert r.json() == {
+        "detail": f"La versión de prompt '{pedida}' no existe. Versiones disponibles: v1, v2."
+    }
+    assert wrapper.llamadas == []
+
+
+def test_health_lista_las_versiones_disponibles(cliente) -> None:
+    with cliente() as c:
+        h = c.get("/health").json()
+    assert h["prompt_version"] == "v2"
+    assert h["prompt_versions"] == ["v1", "v2"]
+
+
+def test_versiones_disponibles_se_ordenan_por_numero(tmp_path, monkeypatch) -> None:
+    from app.prompts import loader
+
+    for nombre in ("v10", "v2", "v1", "borrador", "v3"):
+        (tmp_path / "estimation" / nombre).mkdir(parents=True)
+    for nombre in ("v10", "v2", "v1", "borrador"):  # v3 sin system.j2: no está publicada
+        (tmp_path / "estimation" / nombre / "system.j2").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(loader, "_BASE_DIR", tmp_path)
+
+    assert loader.versiones_disponibles() == ["v1", "v2", "v10"]
 
 
 # --- Falta configuración: 503 ---------------------------------------------------

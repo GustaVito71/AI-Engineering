@@ -27,7 +27,14 @@ from structlog.testing import capture_logs
 from app.config import get_settings
 from app.main import create_app
 from app.routers.estimations import MENSAJE_FALLO_PROVEEDOR, MENSAJE_TIMEOUT
-from streamlit_app import _ApiError, _armar_payload, _detail_texto, _estimar
+from streamlit_app import (
+    _ApiError,
+    _armar_payload,
+    _detail_texto,
+    _estimar,
+    _leer_health,
+    _opciones_de_version,
+)
 
 # `_estimar` pasa un `timeout` al cliente HTTP, que es lo correcto contra la API
 # real; TestClient lo ignora y avisa en cada llamada. El aviso no aporta nada acá.
@@ -166,6 +173,20 @@ def test_la_cache_guarda_el_texto_crudo_y_se_limpia_al_responder(stack, proveedo
         texto, _version, _avisos = _estimar(API, _payload(), api)
 
     assert texto == RESPUESTA_DEL_MODELO
+
+
+def test_el_selector_de_version_llega_hasta_el_proveedor(stack, proveedor) -> None:
+    """Las opciones salen del /health real, y la elegida decide el prompt que se envía."""
+    with stack() as api:
+        opciones = _opciones_de_version(_leer_health(API, api))
+        assert opciones == [("Predeterminada (v2)", None), ("v1", "v1"), ("v2", "v2")]
+
+        _etiqueta, elegida = opciones[1]
+        _texto, version, _avisos = _estimar(API, _payload(), api, prompt_version=elegida)
+
+    assert version == "v1"
+    sistema = proveedor.llamadas[0]["messages"][0]["content"]
+    assert "Always answer in English" in sistema
 
 
 # --- Configuración ------------------------------------------------------------------
