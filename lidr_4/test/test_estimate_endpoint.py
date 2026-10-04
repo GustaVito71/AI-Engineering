@@ -52,15 +52,21 @@ def cliente(monkeypatch):
 class _WrapperFalso:
     """Reemplaza al LLMWrapper: devuelve un resultado fijo o lanza `error`."""
 
-    def __init__(self, error: Exception | None = None, avisos: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        avisos: tuple[str, ...] = (),
+        contenido: str = "| phase | duration_weeks | cost_eur | confidence_pct |",
+    ) -> None:
         self._error = error
         self.avisos = avisos
+        self._contenido = contenido
 
     async def estimate(self, *, prompt_version: str, **_kwargs) -> LLMCallResult:
         if self._error is not None:
             raise self._error
         return LLMCallResult(
-            content="| phase | duration_weeks | cost_eur | confidence_pct |",
+            content=self._contenido,
             model="openai/gpt-4o-mini",
             provider="openai",
             prompt_tokens=10,
@@ -107,6 +113,29 @@ def test_returns_200_with_text_and_prompt_version(cliente) -> None:
         "prompt_version": "v2",
         "avisos": [],
     }
+
+
+@pytest.mark.parametrize(
+    "contenido",
+    [
+        "Totales: 500 horas.\nEquipo: 1 Desarrollador.\n</estimation>",
+        "<estimation>\nTotales: 500 horas.\nEquipo: 1 Desarrollador.\n</estimation>",
+        "<estimation>Totales: 500 horas.\nEquipo: 1 Desarrollador.</estimation>",
+    ],
+    ids=["solo-cierre", "apertura-y-cierre", "en-la-misma-linea"],
+)
+def test_quita_las_etiquetas_del_prompt_que_copia_el_modelo(cliente, contenido) -> None:
+    """El modelo a veces copia el <estimation> que envuelve los ejemplos del prompt."""
+    with _con_wrapper(cliente, _WrapperFalso(contenido=contenido)) as c:
+        r = c.post("/api/v1/estimate", json=BODY)
+    assert r.json()["text"] == "Totales: 500 horas.\nEquipo: 1 Desarrollador."
+
+
+def test_texto_sin_etiquetas_llega_igual(cliente) -> None:
+    texto = "| Fase | Semanas |\n|---|---|\n| QA | 1 |"
+    with _con_wrapper(cliente, _WrapperFalso(contenido=texto)) as c:
+        r = c.post("/api/v1/estimate", json=BODY)
+    assert r.json()["text"] == texto
 
 
 # --- Falta configuración: 503 ---------------------------------------------------
