@@ -25,6 +25,8 @@ from streamlit_app import (
     _detail_texto,
     _error_de_longitud,
     _estimar,
+    _leer_health,
+    _opciones_de_version,
 )
 
 PAYLOAD_VALIDO = {
@@ -180,3 +182,58 @@ def test_descripcion_larga_avisa_el_maximo():
     assert error is not None
     assert f"hasta {DESCRIPTION_MAX_CHARS}" in error
     assert "tiene 3150" in error
+
+
+# --- Versión del prompt -----------------------------------------------------------
+
+
+def _transport_que_registra(urls: list[httpx.URL]) -> httpx.MockTransport:
+    def _handler(request: httpx.Request) -> httpx.Response:
+        urls.append(request.url)
+        return httpx.Response(200, json={"text": "x", "prompt_version": "v1"})
+
+    return httpx.MockTransport(_handler)
+
+
+def test_con_version_elegida_va_en_la_query():
+    urls: list[httpx.URL] = []
+    _estimar("http://api:8001", PAYLOAD_VALIDO, _cliente(_transport_que_registra(urls)), "v1")
+    assert urls[0].params["prompt_version"] == "v1"
+
+
+def test_sin_version_elegida_no_se_manda_el_parametro():
+    """Predeterminada: decide PROMPT_VERSION en el servicio."""
+    urls: list[httpx.URL] = []
+    _estimar("http://api:8001", PAYLOAD_VALIDO, _cliente(_transport_que_registra(urls)))
+    assert "prompt_version" not in urls[0].params
+
+
+def test_opciones_salen_de_health():
+    health = {"prompt_version": "v2", "prompt_versions": ["v1", "v2"]}
+    assert _opciones_de_version(health) == [
+        ("Predeterminada (v2)", None),
+        ("v1", "v1"),
+        ("v2", "v2"),
+    ]
+
+
+@pytest.mark.parametrize("health", [None, {}], ids=["api-caida", "health-vacio"])
+def test_sin_health_queda_solo_la_predeterminada(health):
+    assert _opciones_de_version(health) == [("Predeterminada", None)]
+
+
+def test_health_de_una_api_anterior_sin_prompt_versions():
+    """Una API sin `prompt_versions` deja solo la predeterminada, con su versión."""
+    assert _opciones_de_version({"prompt_version": "v1"}) == [("Predeterminada (v1)", None)]
+
+
+def test_leer_health_devuelve_none_si_la_api_no_responde():
+    def _caida(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("sin conexión")
+
+    assert _leer_health("http://api:8001", _cliente(httpx.MockTransport(_caida))) is None
+
+
+def test_leer_health_devuelve_none_si_no_es_json():
+    transport = httpx.MockTransport(lambda _r: httpx.Response(502, text="<html>Bad Gateway</html>"))
+    assert _leer_health("http://api:8001", _cliente(transport)) is None

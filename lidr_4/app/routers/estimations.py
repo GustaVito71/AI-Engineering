@@ -4,6 +4,8 @@ POST /api/v1/estimate: genera una estimación a partir del formulario tipado.
 
 Errores que puede devolver, además del 422 de validación de Pydantic:
 
+- 422: `?prompt_version=` pide una versión que no existe. El mensaje lista las
+  versiones disponibles.
 - 503: falta configuración local (una API key). Lo resuelve el handler de
   LLMConfigurationError en app/main.py, no este router.
 - 504: el proveedor de LLM no respondió a tiempo (agotados reintentos y respaldo).
@@ -20,11 +22,11 @@ from __future__ import annotations
 import re
 
 import litellm
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import get_settings
 from app.dependencies import get_llm_wrapper
-from app.prompts.loader import render_estimation_prompt
+from app.prompts.loader import render_estimation_prompt, versiones_disponibles
 from app.schemas.estimation import EstimationRequest, EstimationResponse
 from app.tracing import emitir
 
@@ -52,11 +54,21 @@ MENSAJE_FALLO_PROVEEDOR = (
     description=(
         "Genera una estimación de proyecto a partir de una descripción y tres "
         "campos tipados. Devuelve el texto de la estimación y la versión de "
-        "prompt que la produjo, para poder trazarla."
+        "prompt que la produjo, para poder trazarla. Con `?prompt_version=v1` "
+        "se elige otra versión publicada del prompt; sin el parámetro se usa la "
+        "configurada en el servicio (PROMPT_VERSION)."
     ),
 )
 async def estimate(
     request: EstimationRequest,
+    prompt_version: str | None = Query(
+        default=None,
+        description=(
+            "Versión del prompt (por ejemplo `v1` o `v2`). Sin este parámetro se "
+            "usa la configurada en el servicio."
+        ),
+        examples=["v1", "v2"],
+    ),
     llm_wrapper=Depends(get_llm_wrapper),
 ) -> EstimationResponse:
     """Genera una estimación a partir del formulario tipado.
@@ -65,15 +77,15 @@ async def estimate(
     de la plantilla Jinja2 versionada y el wrapper llama al LLM con respaldo y
     caché.
     """
-    settings = get_settings()
+    version = _resolver_version(prompt_version)
 
-    system_prompt, user_prompt = render_estimation_prompt(request, settings.prompt_version)
+    system_prompt, user_prompt = render_estimation_prompt(request, version)
 
     try:
         result = await llm_wrapper.estimate(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            prompt_version=settings.prompt_version,
+            prompt_version=version,
         )
     except litellm.Timeout as exc:
         # Timeout es subclase de APIConnectionError: tiene que ir antes que el
@@ -93,6 +105,29 @@ async def estimate(
         prompt_version=result.prompt_version,
         avisos=list(llm_wrapper.avisos),
     )
+
+
+def _resolver_version(pedida: str | None) -> str:
+    """La versión de prompt a usar: la pedida en la query, o la configurada.
+
+    La pedida se compara contra las versiones publicadas antes de usarla: el
+    valor termina en una ruta de archivo, así que nada que no sea una versión
+    existente llega al loader. Una versión que no existe es un error del
+    cliente (422), con las versiones válidas en el mensaje.
+    """
+    if pedida is None:
+        return get_settings().prompt_version
+    disponibles = versiones_disponibles()
+    if pedida not in disponibles:
+        raise HTTPException(
+            # 422 a secas: el nombre de la constante cambió entre versiones de Starlette.
+            status_code=422,
+            detail=(
+                f"La versión de prompt '{pedida}' no existe. "
+                f"Versiones disponibles: {', '.join(disponibles)}."
+            ),
+        )
+    return pedida
 
 
 def _quitar_etiquetas_del_prompt(texto: str) -> str:

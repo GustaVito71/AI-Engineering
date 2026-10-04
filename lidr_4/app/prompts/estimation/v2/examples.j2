@@ -1,0 +1,93 @@
+{#- Ejemplos few-shot de la versión v2. Los incluye system.j2.
+
+    Los datos (fases, equipos, tarifas, redondeo) están en examples.yaml y las
+    horas, costes y totales los calcula loader.py. Este archivo solo decide cómo
+    se muestran, en el formato que pidió el usuario (output_format) y con el
+    nivel de detalle pedido (detail_level). -#}
+
+{%- macro pluralize(n, singular, plural) -%}
+{{ n }} {{ singular if n == 1 else plural }}
+{%- endmacro -%}
+
+{#- Números en formato castellano: punto de miles. -#}
+{%- macro miles(n) -%}
+{{ "{:,.0f}".format(n).replace(",", ".") }}
+{%- endmacro -%}
+
+{#- Resumen de equipo: dotación máxima por rol, con etiquetas y plurales de examples.yaml. -#}
+{%- macro team_summary(team_headcount) -%}
+{%- for role, hc in team_headcount.items() -%}
+{{ pluralize(hc, rates[role].label, rates[role].plural) }}{{ ", " if not loop.last else "" }}
+{%- endfor -%}
+{%- endmacro -%}
+
+{%- macro render_examples(examples, output_format, detail_level) -%}
+<examples>
+Los siguientes ejemplos muestran el nivel de rigor y el tono que se esperan de una estimación bien hecha. Son salidas de referencia sintéticas, generadas para calibrar: no hay que copiar sus números, solo usarlos como referencia de calibración.
+{% for ex in examples %}
+<example>
+<project_type>
+{{ ex.project_type }}
+</project_type>
+<project_description>
+{{ ex.project_description }}
+</project_description>
+<estimation>
+{% if output_format == "phases_table" %}
+| Fase | Semanas | Coste (EUR) | Confianza (%) |
+|------|---------|-------------|---------------|
+{% for p in ex.phases %}
+| {{ p.phase }} | {{ p.duration_weeks }} | {{ miles(p.cost_eur) }} | {{ p.confidence_pct }} |
+{% endfor %}
+
+Totales: {{ miles(ex.totals.total_hours) }} horas, {{ miles(ex.totals.total_cost_eur) }} EUR, {{ ex.totals.total_duration_weeks }} semanas.
+Equipo: {{ team_summary(ex.team_headcount) }}
+{% elif output_format == "line_items" %}
+{% set ns = namespace(counter=0) %}
+{% for p in ex.phases %}
+{% for b in p.team_breakdown %}
+{% set ns.counter = ns.counter + 1 %}
+{{ ns.counter }}. {{ p.phase }} ({{ rates[b.role].label }}) — {{ miles(b.hours) }} horas — {{ miles(b.cost_eur) }} EUR
+{% endfor %}
+{% endfor %}
+
+Totales: {{ miles(ex.totals.total_hours) }} horas, {{ miles(ex.totals.total_cost_eur) }} EUR, {{ ex.totals.total_duration_weeks }} semanas.
+Equipo: {{ team_summary(ex.team_headcount) }}
+{% elif output_format == "narrative" %}
+{% if detail_level == "summary" %}
+{% for p in ex.phases %}
+La fase de {{ p.phase }} dura {{ pluralize(p.duration_weeks, "semana", "semanas") }}, con {{ miles(p.hours) }} horas de equipo y un coste de {{ miles(p.cost_eur) }} EUR (confianza: {{ p.confidence_pct }} %).
+
+{% endfor %}
+Esfuerzo total: {{ miles(ex.totals.total_hours) }} horas, {{ miles(ex.totals.total_cost_eur) }} EUR, en {{ ex.totals.total_duration_weeks }} semanas de calendario. Equipo: {{ team_summary(ex.team_headcount) }}.
+{% elif detail_level == "medium" %}
+{% for p in ex.phases %}
+La fase de {{ p.phase }} dura {{ pluralize(p.duration_weeks, "semana", "semanas") }}, con {{ miles(p.hours) }} horas de equipo y un coste de {{ miles(p.cost_eur) }} EUR (confianza: {{ p.confidence_pct }} %). Comprende las actividades propias de la fase de {{ p.phase }}.
+
+{% endfor %}
+Esfuerzo total: {{ miles(ex.totals.total_hours) }} horas, {{ miles(ex.totals.total_cost_eur) }} EUR, en {{ ex.totals.total_duration_weeks }} semanas de calendario. Equipo: {{ team_summary(ex.team_headcount) }}.
+{% elif detail_level == "detailed" %}
+{% for p in ex.phases %}
+La fase de {{ p.phase }} dura {{ pluralize(p.duration_weeks, "semana", "semanas") }}, con {{ miles(p.hours) }} horas de equipo y un coste de {{ miles(p.cost_eur) }} EUR (confianza: {{ p.confidence_pct }} %).
+
+Supuestos de la fase de {{ p.phase }}:
+- Composición de equipo estándar para esta fase
+- Sin dependencias externas que bloqueen el avance
+- {{ pluralize(p.duration_weeks, "semana", "semanas") }} {{ "alcanza" if p.duration_weeks == 1 else "alcanzan" }} para el alcance previsto
+
+Riesgos de la fase de {{ p.phase }}:
+- Ampliación del alcance por cambios pedidos por los interesados
+- Disponibilidad de recursos en los períodos de mayor carga
+- Complejidad de integración con los sistemas existentes
+
+{% endfor %}
+Esfuerzo total: {{ miles(ex.totals.total_hours) }} horas, {{ miles(ex.totals.total_cost_eur) }} EUR, en {{ ex.totals.total_duration_weeks }} semanas de calendario. Equipo: {{ team_summary(ex.team_headcount) }}.
+{% endif %}
+{% endif %}
+</estimation>
+</example>
+{% endfor %}
+</examples>
+{%- endmacro -%}
+
+{{ render_examples(examples, output_format, detail_level) }}
