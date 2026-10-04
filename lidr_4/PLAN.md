@@ -38,6 +38,7 @@ conoce el problema que resuelven.
 | Los few-shot se versionan con el prompt: datos en `v1/examples.yaml`, presentación en macros de `v1/system.j2` | Una sola fuente por versión. Los ejemplos se maquetan según el `output_format` pedido, así que se elimina la clase de bugs "el ejemplo 3 enseña un formato que el prompt ya no pide" |
 | La versión por defecto es `v2`: la estimación sale en castellano | La convención del README (mensajes al usuario en castellano) alcanza también a la estimación. `v1` (inglés) sigue publicada e inmutable; `v2` usa los mismos datos y la misma aritmética |
 | `total_horas` y `duracion_semanas` los calcula el modelo | Es lo que hace `../session_4/estimator`. Obliga al modelo a comprometerse con un total. Ver §3.4 |
+| Todo corre en Docker: Redis, API y frontend (`docker-compose.yml`, una imagen) | Un solo modo de arranque. Redis queda dentro de la red de Docker; la API y el frontend se publican solo en `127.0.0.1`. Los tests corren fuera, con `uv` |
 | LiteLLM `Router` es el **único** dueño de retry y fallback | Dos niveles de retry se multiplican y su composición es imposible de razonar |
 | Gateway **async** con `router.acompletion` | El endpoint es async; un cliente sync bloquea el event loop |
 | Coste con `completion_cost()`, sin tabla de precios propia | La tabla se desactualiza en silencio. Ver §8 |
@@ -226,6 +227,17 @@ obliga a razonar sobre las horas de cada fase en lugar de soltarlas sin más. Es
 único punto en que el diseño de la referencia es superior al nuestro, y es la razón
 del cambio.
 
+**Evidencia de la prueba contra la API real (3 de octubre de 2026).** El costo
+que acepta esta decisión apareció en la primera estimación real: con `v1` y
+`gpt-4o-mini`, las fases sumaban 29.750 € y el modelo escribió un total de
+29.850 €. El sistema lo devolvió tal cual, como prevé la tabla de arriba; la
+detección sigue siendo el `model_validator` de WU8.
+
+En la misma prueba, el modelo copió en su respuesta la etiqueta `</estimation>`
+que envuelve los ejemplos del prompt. Eso sí se corrige en código: es
+estructura del prompt, no un número del modelo, y el endpoint la quita antes de
+devolver el texto (`app/routers/estimations.py`).
+
 **Una confusión que hubo que corregir antes de decidir:** la referencia de `session_4`
 y la de `session_4_live` no son lo mismo. `session_4_live` sí tiene schema estructurado
 con `Phase.Estimate`, `total_cost_estimate` y un `model_validator` que comprueba que
@@ -335,7 +347,7 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU3**~~ | ~~Dominio con los totales calculados en código~~ **Revertido**: el modelo calcula. `app/domain/` borrado. Ver §3.4 | — |
 | ~~**WU4**~~ | `app/prompts/estimation/v1/{system.j2,user.j2,examples.yaml}` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")`. Ejemplos como datos, maquetados por `output_format`; roles, tarifas y redondeo en el YAML. 19 tests. **Cerrado** | Resuelto |
 | ~~**WU5**~~ | Gateway async: `Router` con primario y respaldo, claves por proveedor, coste con `completion_cost()`, provider vía `_hidden_params["model_id"]`. Respaldo opcional: sin su clave el servicio sigue con el primario y avisa al usuario (`avisos` en la respuesta y en `/health`). Caché exact-match fail soft sobre un único cliente de Redis. Errores 503 (falta la clave del primario), 502 y 504 con mensaje limpio. Trazabilidad con `estimacion_completada` / `estimacion_fallida`; los logs de LiteLLM quedan en `WARNING` con el formato de structlog, sin prompt ni claves. Devuelve `text: str` sin parsear. 61 tests (wrapper, caché, endpoint, logs), independientes del `.env` y del proveedor primario. **Cerrado** | Resuelto |
-| ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. 9 tests con transporte mockeado. **Cerrado** (todavía sin probar contra la API real) | Resuelto |
+| ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. Validación de longitud en el formulario sin `max_chars` (Streamlit descartaba entero un pegado de más de 2000 caracteres). 15 tests con transporte mockeado. **Cerrado y probado contra la API real** el 3 de octubre de 2026, con todo en Docker: estimación con OpenAI, caché en Redis (8,3 s → 0,5 ms en la repetición), trazabilidad completa y prompt `v2`. Ver §3.4 para lo que mostró la salida del modelo | Resuelto |
 | **WU7** | Slice vertical end-to-end con `mock_response` | Medio |
 | **WU8** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
 | **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
@@ -508,6 +520,8 @@ JSON sin verificar. Es la política, no una preferencia.
 | `response_format` + `stream` no soportado por el provider | Rompe la capa 3 | WU0 lo mide antes de WU8 |
 | El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | Validación cruzada de referencias en WU8 |
 | `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU9 |
+| El total no cuadra con la suma de las fases | Ya ocurrió en la prueba real (29.850 € frente a 29.750 €). Hoy llega así al usuario | `model_validator` en WU8 (§3.4) |
+| El modelo copia etiquetas del prompt (`</estimation>`) | Texto sucio para el usuario | **Mitigado**: el endpoint las quita (§3.4) |
 | Caché semántico sirve una estimación de otro dominio | Resultado plausible pero fuera de tema | Namespace por `prompt_version` + umbral alto, WU10 |
 | Deriva de precios del modelo | Coste reportado ≠ coste real | `completion_cost()` se recalcula, no se cachea el precio |
 
