@@ -1,23 +1,11 @@
 Conoces el software SynCE de sourceforge? Los diferentes componentes de Synce se halla en el sitio https://sourceforge.net/projects/synce/files/SynCE/ Nos interesan 5 de los componentes que se encuentran allí: synce-core libmimedir librra librtfcomp synce-sync-engine Por lo que puedo observar, las versiones halladas fueron publicados todos el 2013-07-25, pero tengo conocimiento de versiones más actuales en Launchpad. El objetivo es instalar en Debian 12.
-
 ¿Puedes estimar el esfuerzo en horas y recursos necesarios para modificar el código fuente? El objetivo es portar el código fuente de los paquetes dependientes de Python 2 a Python 3 y de Pyrex a Cython.
-
 Para aquellos paquetes que posean alguna incompatibilidad, modificar el fuente y crear el paquete DEB correspondiente.
-
 Existen dependencias externas que no se actualizan o no son compatibles con las nuevas versiones. Especialmente algunos parser XML.
-
-Ahora recalcula considerando que hay muy poca documentación que facilite el entendimiento del código, excepto algunos foros del proyecto y no se cuenta con la opción de consultar al equipo de desarrollo original. Para las pruebas unitarias hay que diseñar los casos de prueba para cada función. La probabilidad de dependencias externas puedes hacerla?
-
+Considera que hay muy poca documentación que facilite el entendimiento del código, excepto algunos foros del proyecto y no se cuenta con la opción de consultar al equipo de desarrollo original. Para las pruebas unitarias hay que diseñar los casos de prueba para cada función. La probabilidad de dependencias externas puedes hacerla?
 Necesito que tengas en cuenta el tiempo para desarrollar los paquetes DEB compatibles con las últimas versiones de Debian LTS y Ubuntu LTS.
-
-¿Puedes expresar el total de esfuerzo en días laborales considerando que la jornada es de lunes a viernes, de 9:00 a 16:45 con una hora de almuerzo?
-
 De surgir las complicaciones de mediana a alta probabilidad de ocurrencia, ¿cuál sería el esfuerzo total necesario?
-
+El código tiene interacciones con otros módulos, como dbus, gtk, o glib, podría ser necesario actualizar las interfaces a sus versiones correspondientes para Python 3 (python3-dbus, python3-gi, etc.).
+¿Puedes expresar el total de esfuerzo en días laborales considerando que la jornada es de lunes a viernes, de 9:00 a 16:45 con una hora de almuerzo?
 Se confirma que la documentación de foros es insuficiente.
-
-Si el código tiene interacciones con otros módulos, como dbus, gtk, o glib, podría ser necesario actualizar las interfaces a sus versiones correspondientes para Python 3 (python3-dbus, python3-gi, etc.).
-
 Haz una prevision pesimista.
-
-Importante: un apartado crucial es el Equipo recomendado; cantidad y aptitudes para todo el proyecto.
