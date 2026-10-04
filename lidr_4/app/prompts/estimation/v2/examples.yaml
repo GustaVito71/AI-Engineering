@@ -1,0 +1,184 @@
+# Datos de ejemplo de la versión v2 del prompt.
+# Se guardan por versión para que los prompts publicados sean inmutables.
+# El loader lee este archivo: cambiar sus datos implica una versión nueva, no
+# una edición silenciosa.
+
+# Roles: única fuente de verdad para las tarifas Y para cómo se muestra cada rol.
+# - label / plural: presentación, los usa system.j2 (<scope>, elementos de línea
+#   y resumen de equipo).
+# - eur_per_hour: lo usa la aritmética del loader.
+# El orden de este mapa es el orden en que aparecen los roles en <scope> y en el
+# resumen de equipo. Basta con agregar un rol acá: no hace falta tocar Python.
+rates:
+  developer:
+    label: Desarrollador
+    plural: Desarrolladores
+    eur_per_hour: 62.50
+  designer:
+    label: Diseñador
+    plural: Diseñadores
+    eur_per_hour: 50.00
+  pm:
+    label: PM
+    plural: PMs
+    eur_per_hour: 62.50
+  qa:
+    label: QA
+    plural: QAs
+    eur_per_hour: 62.50
+
+# Reglas de redondeo (se usan en <scope> y en la aritmética del loader).
+rounding:
+  hours_base: 5
+  cost_base: 50
+
+# Horas productivas por persona-semana (se usan en <scope> y en la aritmética del loader).
+productive_hours_per_week: 32
+
+# Ejemplos: cada uno tiene project_type, project_description y fases con la
+# composición del equipo.
+# Horas, costes, totales y dotación del equipo los CALCULA el loader.
+# Cómo se muestran lo decide system.j2.
+examples:
+  - project_type: web_saas
+    project_description: >-
+      Un pequeño SaaS B2B para gestionar el préstamo de equipos a empleados
+      (portátiles, auriculares). Una instancia por cliente, acceso por roles
+      para RR. HH. e IT, registro de auditoría de cada préstamo y resumen
+      semanal por correo. Sin app móvil.
+    phases:
+      - phase: Descubrimiento
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 85
+      - phase: Diseño
+        duration_weeks: 1
+        team:
+          designer: 1
+          developer: 1
+        confidence_pct: 80
+      - phase: Implementación
+        duration_weeks: 5
+        team:
+          developer: 2
+        confidence_pct: 70
+      - phase: QA
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 75
+      - phase: Lanzamiento
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_type: mobile_app
+    project_description: >-
+      App móvil nativa (iOS y Android) para una startup de comidas preparadas:
+      catálogo, suscripción semanal, pago con Stripe, notificaciones push y una
+      pantalla de seguimiento del envío conectada a una API de logística
+      existente.
+    phases:
+      - phase: Descubrimiento
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+          pm: 1
+        confidence_pct: 80
+      - phase: Diseño
+        duration_weeks: 3
+        team:
+          designer: 2
+          developer: 1
+        confidence_pct: 75
+      - phase: Implementación
+        duration_weeks: 9
+        team:
+          developer: 4
+        confidence_pct: 65
+      - phase: QA
+        duration_weeks: 2
+        team:
+          qa: 2
+        confidence_pct: 70
+      - phase: Lanzamiento
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_type: internal_tool
+    project_description: >-
+      Herramienta interna para centralizar los recursos de marketing de tres
+      marcas: búsqueda, etiquetado, acceso por roles para marketing y legales, y
+      un flujo de aprobación antes de que los recursos se publiquen.
+    phases:
+      - phase: Descubrimiento
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 85
+      - phase: Diseño
+        duration_weeks: 2
+        team:
+          designer: 1
+          developer: 1
+        confidence_pct: 80
+      - phase: Implementación
+        duration_weeks: 6
+        team:
+          developer: 2
+        confidence_pct: 70
+      - phase: QA
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 75
+      - phase: Lanzamiento
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_type: data_pipeline
+    project_description: >-
+      Pipeline de datos para ingerir, transformar y servir eventos analíticos de
+      varias fuentes SaaS (Salesforce, HubSpot, Stripe) en un data warehouse en
+      la nube (Snowflake). Incluye CDC, modelos dbt, controles de calidad de
+      datos y una capa de BI de autoservicio (Metabase).
+    phases:
+      - phase: Descubrimiento
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+      - phase: Diseño
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 75
+      - phase: Implementación
+        duration_weeks: 8
+        team:
+          developer: 3
+        confidence_pct: 65
+      - phase: QA
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 70
+      - phase: Lanzamiento
+        duration_weeks: 1
+        team:
+          developer: 1
+        confidence_pct: 80

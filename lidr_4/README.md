@@ -60,7 +60,7 @@ Respuesta:
 ```json
 {
   "text": "| phase | duration_weeks | cost_eur | confidence_pct | …",
-  "prompt_version": "v1",
+  "prompt_version": "v2",
   "avisos": []
 }
 ```
@@ -104,6 +104,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Ejemplos:** horas y costes calculados desde las tarifas y redondeados (5 h / 50 €), totales que cuadran con las fases, una fila por línea en los tres formatos, numeración de `line_items` desde 1 en cada ejemplo, resumen de equipo armado con los `label`/`plural` del YAML.
   - **Validación del YAML** (con una versión temporal en `tmp_path`): rol no declarado en `rates` → error; rol sin `label` → error; un rol nuevo aparece en `<scope>`, partidas y resumen sin tocar Python.
   - **Caché:** el YAML se lee y se calcula una sola vez por versión, y cada llamada recibe su propia copia.
+- `test/test_prompts_v2.py` — render de la versión `v2`: las 36 combinaciones sin texto en inglés, regla de idioma en castellano, tarifas con coma decimal, tabla, elementos de línea y narrativo con números en formato castellano, concordancia de singular y plural, y la misma aritmética que `v1`.
 - `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `avisos` de la respuesta llegan al cliente (vacíos si la API no los envía).
 
 - `test/test_llm_wrapper.py` — el wrapper LLM:
@@ -137,10 +138,11 @@ lidr_4/
 │   ├── prompts/
 │   │   ├── loader.py                  # Carga examples.yaml, aritmética genérica, render
 │   │   └── estimation/
-│   │       └── v1/
-│   │           ├── system.j2          # rol + reglas + bloques condicionales + macros de presentación
-│   │           ├── user.j2            # bloque <project_description>
-│   │           └── examples.yaml      # roles (label, plural, tarifa), redondeo, few-shot
+│   │       ├── v1/                    # estimación en inglés
+│   │       │   ├── system.j2          # rol + reglas + bloques condicionales + macros de presentación
+│   │       │   ├── user.j2            # bloque <project_description>
+│   │       │   └── examples.yaml      # roles (label, plural, tarifa), redondeo, few-shot
+│   │       └── v2/                    # la misma estimación en castellano (versión por defecto)
 │   └── services/
 │       ├── cache.py                   # Caché exact-match de estimaciones (sobre app/cache.py)
 │       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad
@@ -148,6 +150,7 @@ lidr_4/
 │   ├── conftest.py
 │   ├── test_schemas.py
 │   ├── test_prompts.py
+│   ├── test_prompts_v2.py
 │   ├── test_llm_wrapper.py
 │   ├── test_cache.py
 │   ├── test_estimate_endpoint.py
@@ -176,6 +179,13 @@ Consecuencias:
 - Agregar un rol es solo editar `examples.yaml`: aparece en `<scope>`, en las partidas y en el resumen del equipo. El orden de `rates` es el orden en que se muestra.
 - Una `v2/` necesita su propio `examples.yaml` con esa misma forma.
 - Las versiones publicadas son inmutables: corregir `v1` es sacar `v2`, no editar `v1` (ver `PROMPT_VERSION` en `.env.example`).
+
+Versiones publicadas:
+
+| Versión | Idioma de la estimación | Notas |
+|---|---|---|
+| `v1` | Inglés | Instrucciones, ejemplos y etiquetas en inglés; números como `29,850` |
+| `v2` (por defecto) | Castellano | Mismos datos y la misma aritmética que `v1`; instrucciones, ejemplos y etiquetas en castellano; números como `29.850` y `62,50`; registro impersonal |
 
 Lo que vive **fuera** de la versión (en código): el contrato (`EstimationRequest`), el switch de versión, el wrapper y la aritmética de los ejemplos (`loader.py`). Todo lo demás (rol del modelo, reglas, ejemplos, tarifas, formatos de salida, niveles de detalle) vive en `v1/`. Si para cambiar el comportamiento del modelo hay que tocar Python, la separación está rota.
 
@@ -208,7 +218,7 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `LLM_TIMEOUT` | `30.0` | Segundos por llamada al proveedor |
 | `LLM_MAX_RETRIES` | `2` | Reintentos del Router antes de pasar al respaldo |
 | `LLM_MAX_TOKENS` | `4000` | Tope de tokens de la respuesta |
-| `PROMPT_VERSION` | `v1` | Versión de la plantilla de prompt. Hoy no invalida la caché (su clave ya incluye el prompt completo); con el caché semántico de WU10 será su mecanismo de invalidación |
+| `PROMPT_VERSION` | `v2` | Versión de la plantilla de prompt. Hoy no invalida la caché (su clave ya incluye el prompt completo); con el caché semántico de WU10 será su mecanismo de invalidación |
 | `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada |
 | `CACHE_TTL` | `86400` | Segundos |
 | `DESCRIPCION_MIN_CHARS` / `DESCRIPCION_MAX_CHARS` | `20` / `2000` | Techo del operador; solo puede estrechar el contrato |
