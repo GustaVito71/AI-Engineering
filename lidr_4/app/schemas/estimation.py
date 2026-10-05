@@ -45,7 +45,7 @@ class EstimationRequest(BaseModel):
     description: str = Field(
         min_length=20, 
         max_length=2000,
-        description="Free-text description or transcription of the project to estimate.",
+        description="Descripción en texto libre o transcripción del proyecto para estimar.",
     )
     project_type: ProjectType
     detail_level: DetailLevel
@@ -89,5 +89,4 @@ class EstimationResponse(BaseModel):
     avisos: list[str] = Field(
         default_factory=list,
         description="Avisos para el usuario. Vacío si no hay ninguno.",
-    )  
-
+    )
