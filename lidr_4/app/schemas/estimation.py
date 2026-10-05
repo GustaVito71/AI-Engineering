@@ -42,7 +42,11 @@ class OutputFormat(str, Enum):
 
 
 class EstimationRequest(BaseModel):
-    description: str = Field(min_length=20, max_length=2000)
+    description: str = Field(
+        min_length=20, 
+        max_length=2000,
+        description="Free-text description or transcription of the project to estimate.",
+    )
     project_type: ProjectType
     detail_level: DetailLevel
     output_format: OutputFormat
@@ -52,7 +56,7 @@ class EstimationRequest(BaseModel):
         """Aplica el techo configurable de Settings, ya validado contra el
         contrato al arrancar.
 
-        El         `Field` de arriba corre antes que este validador, así que acá solo
+        El `Field` de arriba corre antes que este validador, así que acá solo
         puede llegar texto que ya cumple 20/2000. Solo resta el caso de un
         operador que bajó el techo a mano: se rechaza con un mensaje que
         nombra el número, para que el 422 sea accionable sin leer el traceback.
@@ -77,12 +81,13 @@ class EstimationRequest(BaseModel):
 
 
 class EstimationResponse(BaseModel):
-    text: str
-    prompt_version: str
+    text: str = Field(description="Estimación provista por el LLM como texto libre.")
+    prompt_version: str = Field(description="Identificador de la plantilla de prompt utilizada.")
     # Avisos para el usuario sobre cómo se generó la estimación (por ejemplo,
     # que el modelo de respaldo no está disponible). Lista vacía si no hay
     # ninguno: los clientes que no conocen el campo pueden ignorarlo.
     avisos: list[str] = Field(
         default_factory=list,
         description="Avisos para el usuario. Vacío si no hay ninguno.",
-    )
+    )  
+
