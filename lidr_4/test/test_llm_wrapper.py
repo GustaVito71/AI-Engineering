@@ -123,7 +123,7 @@ def test_missing_fallback_key_starts_without_fallback(monkeypatch, modelos) -> N
     desplegados = [d["litellm_params"]["model"] for d in w._router.model_list]
     assert desplegados == [primario]
     assert not w._router.fallbacks
-    [aviso] = w.avisos
+    [aviso] = w.warnings
     assert var_respaldo in aviso
     assert respaldo in aviso
     [evento] = [e for e in logs if e["event"] == "respaldo_no_disponible"]
@@ -157,12 +157,12 @@ def test_uses_the_settings_it_receives() -> None:
         llm_max_retries=4,
     )
     w = LLMWrapper(settings=s, cache=_CacheVacia())
-    assert w.avisos == ()
+    assert w.warnings == ()
     assert w._router.num_retries == 4
 
 
 def test_no_notices_when_both_keys_are_set(wrapper) -> None:
-    assert wrapper.avisos == ()
+    assert wrapper.warnings == ()
 
 
 def test_each_deployment_gets_its_provider_key(monkeypatch, modelos) -> None:

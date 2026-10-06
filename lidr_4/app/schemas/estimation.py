@@ -5,13 +5,13 @@ Son dos capas de límites sobre `description`, y no es redundancia:
 - El `Field(20, 2000)` es el CONTRATO con el cliente. Lo que Swagger muestra y
   lo que Pydantic valida salen de acá, y no se puede reconfigurar: es la
   promesa de la API.
-- `Settings.descripcion_min_chars/max_chars` es el TECHO DEL OPERADOR. Existe
+- `Settings.description_min_chars/max_chars` es el TECHO DEL OPERADOR. Existe
   porque el tamaño de la entrada es la factura, y un techo de coste que exige
   redeploy es un techo blando. Solo puede restringir el contrato, nunca
-  ampliarlo (ver validar_techo_descripcion en app/config.py).
+  ampliarlo (ver validate_description_ceiling en app/config.py).
 
 Pydantic no puede volcar a un JSON Schema estático un `model_validator` que lee
-configuración, así que app.main._completar_schema_openapi deriva esos dos
+configuración, así que app.main._complete_openapi_schema deriva esos dos
 números a mano para que Swagger no prometa más de lo que el servicio tolera.
 """
 
@@ -43,7 +43,7 @@ class OutputFormat(str, Enum):
 
 class EstimationRequest(BaseModel):
     description: str = Field(
-        min_length=20, 
+        min_length=20,
         max_length=2000,
         description="Descripción en texto libre o transcripción del proyecto para estimar.",
     )
@@ -52,7 +52,7 @@ class EstimationRequest(BaseModel):
     output_format: OutputFormat
 
     @model_validator(mode="after")
-    def _validar_techo_del_operador(self) -> "EstimationRequest":
+    def _validate_operator_ceiling(self) -> "EstimationRequest":
         """Aplica el techo configurable de Settings, ya validado contra el
         contrato al arrancar.
 
@@ -66,16 +66,16 @@ class EstimationRequest(BaseModel):
         min_length es validar lo que enseñan los tutoriales; el `max` es el
         que protege el coste."""
         cfg = get_settings()
-        longitud = len(self.description)
-        if longitud < cfg.descripcion_min_chars:
+        length = len(self.description)
+        if length < cfg.description_min_chars:
             raise ValueError(
-                f"La descripción debe tener al menos {cfg.descripcion_min_chars} "
-                f"caracteres (recibidos {longitud})."
+                f"La descripción debe tener al menos {cfg.description_min_chars} "
+                f"caracteres (recibidos {length})."
             )
-        if longitud > cfg.descripcion_max_chars:
+        if length > cfg.description_max_chars:
             raise ValueError(
-                f"La descripción no puede superar {cfg.descripcion_max_chars} "
-                f"caracteres (recibidos {longitud})."
+                f"La descripción no puede superar {cfg.description_max_chars} "
+                f"caracteres (recibidos {length})."
             )
         return self
 
@@ -86,7 +86,7 @@ class EstimationResponse(BaseModel):
     # Avisos para el usuario sobre cómo se generó la estimación (por ejemplo,
     # que el modelo de respaldo no está disponible). Lista vacía si no hay
     # ninguno: los clientes que no conocen el campo pueden ignorarlo.
-    avisos: list[str] = Field(
+    warnings: list[str] = Field(
         default_factory=list,
         description="Avisos para el usuario. Vacío si no hay ninguno.",
     )

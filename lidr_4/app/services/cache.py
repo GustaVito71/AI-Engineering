@@ -11,7 +11,7 @@ omite, con un warning en el log. La estimación nunca falla por la caché.
 
 Este módulo no reimplementa el acceso a Redis ni crea conexiones: delega en las
 funciones de app/cache.py y usa el único cliente de la app, el que crea el
-lifespan con `crear_cliente_cache` (timeouts, PING de arranque y cierre al
+lifespan con `create_cache_client` (timeouts, PING de arranque y cierre al
 apagar). Así hay un solo pool de conexiones y es el que se cierra.
 """
 
@@ -24,11 +24,11 @@ from redis.asyncio import Redis
 from app.cache import get_cached_estimation, set_cached_estimation
 
 
-def crear_estimation_cache(client: Redis | None, ttl: int) -> EstimationCache | _NoOpCache:
+def create_estimation_cache(client: Redis | None, ttl: int) -> EstimationCache | _NoOpCache:
     """La caché sobre el cliente del lifespan, o una desactivada si no hay cliente.
 
     `client` es None cuando REDIS_URL está vacío: es el modo "sin caché" de
-    `crear_cliente_cache`, y acá se traduce a una caché que siempre falla.
+    `create_cache_client`, y acá se traduce a una caché que siempre falla.
     """
     if client is None:
         return _NoOpCache()

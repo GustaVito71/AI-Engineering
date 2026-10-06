@@ -14,9 +14,9 @@ from fakeredis import FakeAsyncRedis
 from fastapi.testclient import TestClient
 from redis.asyncio import Redis
 
-from app.cache import cerrar_cliente_cache, crear_cliente_cache
+from app.cache import close_cache_client, create_cache_client
 from app.config import Settings, get_settings
-from app.services.cache import EstimationCache, _NoOpCache, crear_estimation_cache
+from app.services.cache import EstimationCache, _NoOpCache, create_estimation_cache
 from app.services.llm_wrapper import LLMWrapper
 
 # Puerto 1: nadie escucha, la conexión se rechaza al instante.
@@ -29,7 +29,7 @@ def _cache_fake(ttl: int = 60) -> EstimationCache:
 
 async def _cliente_caido() -> Redis:
     """Cliente real hacia un Redis que no responde, creado como en el lifespan."""
-    return await crear_cliente_cache(Settings(_env_file=None, redis_url=REDIS_CAIDO))
+    return await create_cache_client(Settings(_env_file=None, redis_url=REDIS_CAIDO))
 
 
 @pytest.fixture(autouse=True)
@@ -79,18 +79,18 @@ async def test_corrupt_entry_is_a_miss() -> None:
 
 async def test_get_with_redis_down_is_a_miss() -> None:
     cliente = await _cliente_caido()
-    cache = crear_estimation_cache(cliente, ttl=60)
+    cache = create_estimation_cache(cliente, ttl=60)
     inicio = time.monotonic()
     assert await cache.get("cualquier-clave") is None
     assert time.monotonic() - inicio < 3  # acotado por el timeout, no cuelga
-    await cerrar_cliente_cache(cliente)
+    await close_cache_client(cliente)
 
 
 async def test_set_with_redis_down_does_not_raise() -> None:
     cliente = await _cliente_caido()
-    cache = crear_estimation_cache(cliente, ttl=60)
+    cache = create_estimation_cache(cliente, ttl=60)
     await cache.set("cualquier-clave", {"content": "ok"})  # no lanza
-    await cerrar_cliente_cache(cliente)
+    await close_cache_client(cliente)
 
 
 # --- Caché desactivada ----------------------------------------------------------
@@ -98,9 +98,9 @@ async def test_set_with_redis_down_does_not_raise() -> None:
 
 async def test_no_client_disables_cache() -> None:
     """REDIS_URL vacío: el lifespan no crea cliente y la caché queda desactivada."""
-    cliente = await crear_cliente_cache(Settings(_env_file=None, redis_url=""))
+    cliente = await create_cache_client(Settings(_env_file=None, redis_url=""))
     assert cliente is None
-    cache = crear_estimation_cache(cliente, ttl=60)
+    cache = create_estimation_cache(cliente, ttl=60)
     assert isinstance(cache, _NoOpCache)
     await cache.set(cache.make_key("s", "u"), {"content": "ok"})
     assert await cache.get(cache.make_key("s", "u")) is None
@@ -115,7 +115,7 @@ async def test_estimate_works_with_redis_down(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
     get_settings.cache_clear()
     cliente = await _cliente_caido()
-    wrapper = LLMWrapper(settings=get_settings(), cache=crear_estimation_cache(cliente, ttl=60))
+    wrapper = LLMWrapper(settings=get_settings(), cache=create_estimation_cache(cliente, ttl=60))
     original = wrapper._router.acompletion
 
     async def sin_red(**kwargs):
@@ -125,7 +125,7 @@ async def test_estimate_works_with_redis_down(monkeypatch) -> None:
 
     res = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
     assert res.content == "estimación simulada"
-    await cerrar_cliente_cache(cliente)
+    await close_cache_client(cliente)
 
 
 def test_app_opens_a_single_redis_client_and_the_wrapper_uses_it(monkeypatch) -> None:

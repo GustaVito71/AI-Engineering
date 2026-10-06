@@ -57,10 +57,10 @@ async def get_cached_estimation(client: Redis, key: str) -> dict | None:
         return None
 
 
-async def set_cached_estimation(client: Redis, key: str, resultado: dict, ttl: int) -> None:
+async def set_cached_estimation(client: Redis, key: str, result: dict, ttl: int) -> None:
     """Guarda un resultado con TTL en segundos. Fail soft igual que la lectura."""
     try:
-        await client.set(key, json.dumps(resultado), ex=ttl)
+        await client.set(key, json.dumps(result), ex=ttl)
     except (RedisError, TypeError):
         logger.warning("Cache Redis no disponible en escritura; respuesta sin cachear")
 
@@ -68,10 +68,10 @@ async def set_cached_estimation(client: Redis, key: str, resultado: dict, ttl: i
 # Un cache lento es peor que un cache ausente: si Redis está caído pero el
 # socket no cierra, cada request cuelga hasta este timeout. 1s deja margen de
 # sobra para un Redis sano en localhost y acota el daño cuando no lo está.
-_TIMEOUT_SEGUNDOS = 1.0
+_TIMEOUT_SECONDS = 1.0
 
 
-async def crear_cliente_cache(settings: Settings) -> Redis | None:
+async def create_cache_client(settings: Settings) -> Redis | None:
     """Cliente Redis para el lifespan, o None si no hay cache.
 
     Devolver `None` (y no un cliente roto) cuando `REDIS_URL` está vacío es lo
@@ -86,14 +86,14 @@ async def crear_cliente_cache(settings: Settings) -> Redis | None:
     if not settings.redis_url:
         logger.info("Cache desactivado: REDIS_URL vacío")
         return None
-    cliente = Redis.from_url(
+    redis_client = Redis.from_url(
         settings.redis_url,
         decode_responses=True,
-        socket_connect_timeout=_TIMEOUT_SEGUNDOS,
-        socket_timeout=_TIMEOUT_SEGUNDOS,
+        socket_connect_timeout=_TIMEOUT_SECONDS,
+        socket_timeout=_TIMEOUT_SECONDS,
     )
     try:
-        await cliente.ping()
+        await redis_client.ping()
     except RedisError as exc:
         # No se propaga: el cliente se entrega igual. Si Redis está caído ahora
         # pero vuelve, el cache se recupera solo en la request siguiente sin
@@ -103,14 +103,14 @@ async def crear_cliente_cache(settings: Settings) -> Redis | None:
         )
     else:
         logger.info("Cache Redis conectado", redis_url=settings.redis_url)
-    return cliente
+    return redis_client
 
 
-async def cerrar_cliente_cache(cliente: Redis | None) -> None:
+async def close_cache_client(redis_client: Redis | None) -> None:
     """Cierra el pool de conexiones del cliente. Idempotente y fail-soft."""
-    if cliente is None:
+    if redis_client is None:
         return
     try:
-        await cliente.aclose()
+        await redis_client.aclose()
     except RedisError as exc:
         logger.warning("No se pudo cerrar el cliente de Redis limpiamente", error=str(exc))

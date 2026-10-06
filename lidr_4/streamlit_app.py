@@ -1,7 +1,8 @@
 """Frontend Streamlit del servicio Estimador (entrega de lidr_4).
 
 La interfaz es un cliente liviano de una sola petición: se completa un
-formulario tipado y se recibe una estimación en texto libre. Nunca toca una API
+formulario tipado y se recibe una estimación en texto libre o, con «Salida
+estructurada», como datos (fases, equipo y totales). Nunca toca una API
 key de proveedor; el backend lee sus propias claves de Settings (.env). El
 frontend solo necesita la URL base de la API en ejecución
 (`ESTIMATOR_API_BASE_URL`, por defecto http://localhost:8001).
@@ -15,7 +16,7 @@ Por qué un formulario y no un chat: la petición es un contrato tipado
 contrato al usuario y permite que el navegador valide las longitudes antes de
 gastar un token.
 
-Por qué la llamada HTTP es una función pura: `_estimar` se puede probar sin un
+Por qué la llamada HTTP es una función pura: `_estimate` se puede probar sin un
 runtime de Streamlit en marcha. El test de contrato de test/test_frontend.py le
 pasa un transporte HTTP simulado. Las llamadas a Streamlit viven solo dentro de
 `main()`, que Streamlit ejecuta como __main__; importar el módulo desde pytest
@@ -39,9 +40,14 @@ DEFAULT_API_BASE = os.environ.get("ESTIMATOR_API_BASE_URL", "http://localhost:80
 #
 # El máximo NO se pasa como `max_chars` al campo de texto: con ese tope, Streamlit
 # descarta entero un pegado que lo supere, sin ningún aviso, y el campo queda
-# vacío. Sin tope se pega todo y `_error_de_longitud` explica qué sobra.
+# vacío. Sin tope se pega todo y `_length_error` explica qué sobra.
 DESCRIPTION_MIN_CHARS = 20
 DESCRIPTION_MAX_CHARS = 2000
+
+# Prefijo con el que el servicio marca una estimación rechazada en la salida
+# estructurada. Copiado del schema (`OUT_OF_SCOPE_PREFIX`) por la misma
+# razón que los límites de arriba: el frontend no depende del paquete `app`.
+OUT_OF_SCOPE_PREFIX = "Fuera de alcance:"
 
 PROJECT_TYPES = {
     "mobile_app": "App móvil",
@@ -72,7 +78,7 @@ class _ApiError(Exception):
         self.detail = detail
 
 
-def _detail_texto(detail: object) -> str:
+def _detail_text(detail: object) -> str:
     """Convierte el `detail` de una respuesta de error en texto legible.
 
     En los errores de validación (422), FastAPI manda `detail` como una lista de
@@ -84,26 +90,26 @@ def _detail_texto(detail: object) -> str:
     return str(detail)
 
 
-def _error_de_longitud(descripcion: str) -> str | None:
+def _length_error(description: str) -> str | None:
     """Mensaje de error si la descripción está fuera de los límites, o None si es válida.
 
     Recibe el texto ya sin espacios en los extremos, que es lo que se envía a la API.
     """
-    largo = len(descripcion)
-    if largo < DESCRIPTION_MIN_CHARS:
+    length = len(description)
+    if length < DESCRIPTION_MIN_CHARS:
         return (
-            f"La descripción necesita al menos {DESCRIPTION_MIN_CHARS} caracteres (tiene {largo})."
+            f"La descripción necesita al menos {DESCRIPTION_MIN_CHARS} caracteres (tiene {length})."
         )
-    if largo > DESCRIPTION_MAX_CHARS:
+    if length > DESCRIPTION_MAX_CHARS:
         return (
-            f"La descripción admite hasta {DESCRIPTION_MAX_CHARS} caracteres (tiene {largo}). "
+            f"La descripción admite hasta {DESCRIPTION_MAX_CHARS} caracteres (tiene {length}). "
             "Acortala antes de estimar."
         )
     return None
 
 
-def _armar_payload(
-    descripcion: str, project_type: str, detail_level: str, output_format: str
+def _build_payload(
+    description: str, project_type: str, detail_level: str, output_format: str
 ) -> dict:
     """El cuerpo de `POST /api/v1/estimate` a partir de los campos del formulario.
 
@@ -111,26 +117,26 @@ def _armar_payload(
     clave mal escrita acá rompe el contrato con la API sin ningún error local.
     """
     return {
-        "description": descripcion,
+        "description": description,
         "project_type": project_type,
         "detail_level": detail_level,
         "output_format": output_format,
     }
 
 
-def _leer_health(api_base: str, client: httpx.Client | None = None) -> dict | None:
+def _read_health(api_base: str, client: httpx.Client | None = None) -> dict | None:
     """El JSON de `/health`, o None si la API no responde o no devuelve JSON."""
-    cliente = client if client is not None else httpx.Client()
+    http_client = client if client is not None else httpx.Client()
     try:
-        return cliente.get(f"{api_base}/health", timeout=3.0).json()
+        return http_client.get(f"{api_base}/health", timeout=3.0).json()
     except (httpx.HTTPError, ValueError):
         return None
     finally:
         if client is None:
-            cliente.close()
+            http_client.close()
 
 
-def _opciones_de_version(health: dict | None) -> list[tuple[str, str | None]]:
+def _version_options(health: dict | None) -> list[tuple[str, str | None]]:
     """Opciones del selector de versión: `(etiqueta, valor de ?prompt_version=)`.
 
     La primera es siempre la predeterminada, con valor None: no se manda el
@@ -140,12 +146,12 @@ def _opciones_de_version(health: dict | None) -> list[tuple[str, str | None]]:
     """
     if not health:
         return [("Predeterminada", None)]
-    configurada = health.get("prompt_version")
-    etiqueta = f"Predeterminada ({configurada})" if configurada else "Predeterminada"
-    return [(etiqueta, None)] + [(v, v) for v in health.get("prompt_versions") or []]
+    configured = health.get("prompt_version")
+    label = f"Predeterminada ({configured})" if configured else "Predeterminada"
+    return [(label, None)] + [(v, v) for v in health.get("prompt_versions") or []]
 
 
-def _estimar(
+def _estimate(
     api_base: str,
     payload: dict,
     client: httpx.Client | None = None,
@@ -154,34 +160,183 @@ def _estimar(
     """Envía el formulario a `/api/v1/estimate` y devuelve `(text, prompt_version, avisos)`.
 
     El contrato de respuesta es `{text, prompt_version, avisos}`: texto libre,
-    sin estructura que parsear. `avisos` puede faltar si la API es anterior a
+    sin estructura que parsear. `warnings` puede faltar si la API es anterior a
     ese campo, y entonces se toma como lista vacía. Una respuesta distinta de
     200 lanza `_ApiError` con el código HTTP real y el `detail` parseado (el
-    422 de FastAPI llega como lista de `{msg, ...}`, que `_detail_texto`
+    422 de FastAPI llega como lista de `{msg, ...}`, que `_detail_text`
     aplana). `client` lo inyectan los tests (httpx.MockTransport); la UI deja
     que la función cree el suyo. Con `prompt_version` se pide esa versión del
     prompt (`?prompt_version=`); sin él, la API usa la configurada.
     """
-    propio = client is None
-    cliente = client if client is not None else httpx.Client()
+    owns_client = client is None
+    http_client = client if client is not None else httpx.Client()
     try:
-        respuesta = cliente.post(
+        response = http_client.post(
             f"{api_base}/api/v1/estimate",
             json=payload,
             params={"prompt_version": prompt_version} if prompt_version else None,
             timeout=None,
         )
-        if respuesta.status_code != 200:
+        if response.status_code != 200:
             try:
-                detail = respuesta.json().get("detail", respuesta.text)
+                detail = response.json().get("detail", response.text)
             except ValueError:
-                detail = respuesta.text
-            raise _ApiError(respuesta.status_code, detail)
-        cuerpo = respuesta.json()
-        return cuerpo["text"], cuerpo["prompt_version"], list(cuerpo.get("avisos") or [])
+                detail = response.text
+            raise _ApiError(response.status_code, detail)
+        body = response.json()
+        return body["text"], body["prompt_version"], list(body.get("warnings") or [])
     finally:
-        if propio:
-            cliente.close()
+        if owns_client:
+            http_client.close()
+
+
+# --- Structured response ----------------------------------------------------
+# Con «Salida estructurada» el formulario llama a `/api/v1/estimate/structured`,
+# que devuelve la estimación como JSON (fases, equipo y totales). El modelo
+# devuelve siempre la misma estructura: `output_format` decide acá cómo se
+# muestra, no qué se pide. Las funciones que arman lo que se muestra son puras,
+# como `_estimate`, para poder probarlas sin runtime de Streamlit.
+
+
+def _structured_version_options(health: dict | None) -> list[tuple[str, str | None]]:
+    """Como `_version_options`, con las versiones de salida estructurada de `/health`."""
+    if not health:
+        return [("Predeterminada", None)]
+    configured = health.get("structured_prompt_version")
+    label = f"Predeterminada ({configured})" if configured else "Predeterminada"
+    return [(label, None)] + [(v, v) for v in health.get("structured_prompt_versions") or []]
+
+
+def _estimate_structured(
+    api_base: str,
+    payload: dict,
+    client: httpx.Client | None = None,
+    prompt_version: str | None = None,
+) -> tuple[dict, str, list[str], bool]:
+    """Envía el formulario a `/api/v1/estimate/structured`.
+
+    Devuelve `(estimation, prompt_version, avisos, cached)`, con `estimation`
+    como el dict de fases, equipo, totales, resumen y confianza, y `cached` en
+    True si la estimación salió de la caché del servicio. Errores y `client`
+    como en `_estimate`.
+    """
+    owns_client = client is None
+    http_client = client if client is not None else httpx.Client()
+    try:
+        response = http_client.post(
+            f"{api_base}/api/v1/estimate/structured",
+            json=payload,
+            params={"prompt_version": prompt_version} if prompt_version else None,
+            timeout=None,
+        )
+        if response.status_code != 200:
+            try:
+                detail = response.json().get("detail", response.text)
+            except ValueError:
+                detail = response.text
+            raise _ApiError(response.status_code, detail)
+        body = response.json()
+        return (
+            body["estimation"],
+            body["prompt_version"],
+            list(body.get("warnings") or []),
+            bool(body.get("cached")),
+        )
+    finally:
+        if owns_client:
+            http_client.close()
+
+
+def _format_number(n: float) -> str:
+    """29850 -> '29.850'; 2.5 -> '2,5'. Números en formato castellano."""
+    if float(n).is_integer():
+        return f"{int(n):,}".replace(",", ".")
+    return f"{n:,.2f}".rstrip("0").replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _format_weeks(n: float) -> str:
+    return f"{_format_number(n)} {'semana' if n == 1 else 'semanas'}"
+
+
+def _phase_rows(estimation: dict) -> list[dict]:
+    """Filas de la tabla de fases, con encabezados en castellano."""
+    return [
+        {
+            "Fase": p["name"],
+            "Semanas": _format_number(p["duration_weeks"]),
+            "Horas": _format_number(p["hours"]),
+            "Coste (EUR)": _format_number(p["cost_eur"]),
+            "Confianza (%)": p["confidence_pct"],
+            # Al final: es la columna larga, y las cifras tienen que verse primero.
+            "Descripción": p["summary"],
+        }
+        for p in estimation["phases"]
+    ]
+
+
+def _line_items(estimation: dict) -> list[str]:
+    """Una línea por fase para el formato «Partidas detalladas», numeradas desde 1."""
+    return [
+        f"{i}. {p['name']} — {_format_weeks(p['duration_weeks'])} — {_format_number(p['hours'])} horas — "
+        f"{_format_number(p['cost_eur'])} EUR (confianza: {p['confidence_pct']} %). {p['summary']}"
+        for i, p in enumerate(estimation["phases"], start=1)
+    ]
+
+
+def _narrative(estimation: dict) -> list[str]:
+    """Un párrafo por fase para el formato «Narrativa»."""
+    return [
+        f"**{p['name']}.** {p['summary']} Dura {_format_weeks(p['duration_weeks'])}, con "
+        f"{_format_number(p['hours'])} horas de equipo y un coste de {_format_number(p['cost_eur'])} EUR "
+        f"(confianza: {p['confidence_pct']} %)."
+        for p in estimation["phases"]
+    ]
+
+
+def _team_summary(estimation: dict) -> str:
+    """'Desarrollador × 2, Diseñador × 1'."""
+    return ", ".join(f"{member['role']} × {member['headcount']}" for member in estimation["team"])
+
+
+def _is_out_of_scope(estimation: dict) -> bool:
+    """True si el modelo rechazó estimar. Mismo criterio que el schema del servicio."""
+    return estimation["summary"].startswith(OUT_OF_SCOPE_PREFIX)
+
+
+def _show_structured(estimation: dict, output_format: str) -> None:
+    """Muestra la estimación estructurada en el formato elegido en el formulario."""
+    # Un rechazo no tiene cifras que mostrar: solo qué información falta.
+    if _is_out_of_scope(estimation):
+        st.info(estimation["summary"])
+        return
+
+    st.markdown(estimation["summary"])
+    totals = estimation["totals"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Horas", _format_number(totals["hours"]))
+    c2.metric("Coste (EUR)", _format_number(totals["cost_eur"]))
+    c3.metric("Duración", _format_weeks(totals["duration_weeks"]))
+    c4.metric("Confianza", f"{estimation['confidence_pct']} %")
+
+    if output_format == "phases_table":
+        st.dataframe(_phase_rows(estimation), hide_index=True, use_container_width=True)
+    elif output_format == "line_items":
+        st.markdown("\n".join(_line_items(estimation)))
+    else:
+        for paragraph in _narrative(estimation):
+            st.markdown(paragraph)
+
+    st.markdown(f"**Equipo:** {_team_summary(estimation)}")
+
+    # Supuestos y riesgos solo existen con nivel de detalle medio o detallado.
+    for phase in estimation["phases"]:
+        if not phase["assumptions"] and not phase["risks"]:
+            continue
+        with st.expander(f"Supuestos y riesgos: {phase['name']}"):
+            for assumption in phase["assumptions"]:
+                st.markdown(f"- {assumption}")
+            for risk in phase["risks"]:
+                st.markdown(f"- **Riesgo:** {risk['risk']} — **Mitigación:** {risk['mitigation']}")
 
 
 def main() -> None:
@@ -198,11 +353,11 @@ def main() -> None:
     # selector de versión sin consultar la API en cada interacción. "Probar
     # conexión" lo vuelve a leer.
     if st.session_state.get("health_de") != api_base:
-        st.session_state["health"] = _leer_health(api_base)
+        st.session_state["health"] = _read_health(api_base)
         st.session_state["health_de"] = api_base
 
     if st.sidebar.button("Probar conexión", use_container_width=True):
-        st.session_state["health"] = _leer_health(api_base)
+        st.session_state["health"] = _read_health(api_base)
         health = st.session_state["health"]
         if health is not None:
             st.sidebar.success(
@@ -215,19 +370,35 @@ def main() -> None:
                     "no se pueden generar estimaciones."
                 )
             # Avisos que no impiden estimar (por ejemplo, respaldo no disponible).
-            for aviso in health.get("avisos") or []:
-                st.sidebar.warning(aviso)
+            for warning in health.get("warnings") or []:
+                st.sidebar.warning(warning)
         else:
             st.sidebar.error(
                 f"No se pudo conectar a {api_base}. Levantá los servicios con:\n\n`docker compose up -d`"
             )
 
-    opciones = _opciones_de_version(st.session_state.get("health"))
-    _etiqueta, prompt_version_elegida = st.sidebar.selectbox(
+    # --- Structured response ----------------------------------------------------
+    # El interruptor decide el endpoint y, con él, qué versiones se ofrecen: cada
+    # endpoint acepta solo las de su tipo de salida.
+    structured = st.sidebar.toggle(
+        "Salida estructurada",
+        key="structured_output",
+        help="Pide la estimación como datos (fases, equipo y totales) en vez de texto libre.",
+    )
+    if structured:
+        options = _structured_version_options(st.session_state.get("health"))
+        help_text = "Predeterminada usa STRUCTURED_PROMPT_VERSION del servicio."
+    else:
+        options = _version_options(st.session_state.get("health"))
+        help_text = "Predeterminada usa la versión configurada en el servicio (PROMPT_VERSION)."
+    _label, chosen_prompt_version = st.sidebar.selectbox(
         "Versión del prompt",
-        options=opciones,
-        format_func=lambda opcion: opcion[0],
-        help="Predeterminada usa la versión configurada en el servicio (PROMPT_VERSION).",
+        options=options,
+        format_func=lambda option: option[0],
+        help=help_text,
+        # Una clave por tipo: al cambiar el interruptor no queda elegida una
+        # versión del otro tipo.
+        key=f"version_{'structured' if structured else 'text'}",
     )
 
     st.title("📋 Estimá un proyecto")
@@ -237,14 +408,19 @@ def main() -> None:
 
     # Una sola estimación en pantalla: cada resultado nuevo reemplaza al anterior
     # en vez de sumarse debajo. No se guarda historial porque no hay conversación.
-    resultado = st.session_state.get("resultado")
+    result = st.session_state.get("resultado")
 
-    if resultado:
+    if result:
         # Los avisos van antes del texto: condicionan cómo leer la estimación.
-        for aviso in resultado.get("avisos") or []:
-            st.warning(aviso)
-        st.markdown(resultado["text"])
-        st.caption(f"Prompt: {resultado['prompt_version']}")
+        for warning in result.get("warnings") or []:
+            st.warning(warning)
+        # --- Structured response ----------------------------------------------------
+        if "estimation" in result:
+            _show_structured(result["estimation"], result["output_format"])
+        else:
+            st.markdown(result["text"])
+        cache_note = " · desde la caché" if result.get("cached") else ""
+        st.caption(f"Prompt: {result['prompt_version']}{cache_note}")
         if st.button("🧹 Nueva estimación"):
             st.session_state.pop("resultado", None)
             st.rerun()
@@ -278,24 +454,37 @@ def main() -> None:
                 format_func=OUTPUT_FORMATS.get,
                 key="output_format_entrada",
             )
-        enviar = st.form_submit_button("Estimar", type="primary")
+        submitted = st.form_submit_button("Estimar", type="primary")
 
-    if not enviar:
+    if not submitted:
         return
 
-    limpio = description.strip()
-    error = _error_de_longitud(limpio)
+    cleaned = description.strip()
+    error = _length_error(cleaned)
     if error:
         st.error(error)
         return
 
-    payload = _armar_payload(limpio, project_type, detail_level, output_format)
+    payload = _build_payload(cleaned, project_type, detail_level, output_format)
     try:
-        texto, prompt_version, avisos = _estimar(
-            api_base, payload, prompt_version=prompt_version_elegida
+        # --- Structured response ----------------------------------------------------
+        if structured:
+            estimation, prompt_version, warnings, cached = _estimate_structured(
+                api_base, payload, prompt_version=chosen_prompt_version
+            )
+            st.session_state["resultado"] = {
+                "estimation": estimation,
+                "cached": cached,
+                "output_format": output_format,
+                "prompt_version": prompt_version,
+                "warnings": warnings,
+            }
+            st.rerun()
+        text, prompt_version, warnings = _estimate(
+            api_base, payload, prompt_version=chosen_prompt_version
         )
     except _ApiError as exc:
-        st.error(_detail_texto(exc.detail))
+        st.error(_detail_text(exc.detail))
         return
     except httpx.HTTPError:
         st.error(
@@ -304,9 +493,9 @@ def main() -> None:
         return
 
     st.session_state["resultado"] = {
-        "text": texto,
+        "text": text,
         "prompt_version": prompt_version,
-        "avisos": avisos,
+        "warnings": warnings,
     }
     st.rerun()
 

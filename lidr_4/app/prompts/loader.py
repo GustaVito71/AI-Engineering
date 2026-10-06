@@ -9,7 +9,9 @@ de presentación), reglas de redondeo y datos de ejemplo. Los prompts publicados
 son inmutables: cambiar el comportamiento implica un directorio de versión nuevo.
 
 Reparto de responsabilidades:
-- ``examples.yaml``: los datos (roles, tarifas, etiquetas, redondeo, ejemplos).
+- ``examples.yaml``: los datos (roles, tarifas, etiquetas, redondeo, ejemplos) y,
+  opcionalmente, el tipo de salida de la versión (``output``, ver
+  ``output_of_version``).
 - ``loader.py``: solo aritmética genérica (horas, costes, totales, dotación).
   Nunca decide cómo se muestra nada, así que una versión nueva puede cambiar
   la presentación sin tocar Python.
@@ -21,6 +23,7 @@ Reparto de responsabilidades:
 
 from __future__ import annotations
 
+import json
 import re
 from copy import deepcopy
 from functools import lru_cache
@@ -31,6 +34,11 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateNotFound
 
 from app.schemas.estimation import EstimationRequest
+from app.schemas.structured_estimation import (
+    MIN_CONFIDENCE_PCT,
+    OUT_OF_SCOPE_PREFIX,
+    UNESTIMATED_PHASE,
+)
 
 _BASE_DIR = Path(__file__).resolve().parent
 
@@ -41,19 +49,72 @@ _BASE_DIR = Path(__file__).resolve().parent
 _ROLE_FIELDS = ("label", "plural", "eur_per_hour")
 
 
-def versiones_disponibles() -> list[str]:
-    """Versiones de prompt publicadas: los directorios ``vN/`` con un ``system.j2``.
+# --- Structured response ----------------------------------------------------
+# Tipos de salida de una versión de prompt (clave `output` de su examples.yaml).
+# Cada endpoint acepta solo las versiones de su tipo: `/estimate` las de texto
+# libre y `/estimate/structured` las estructuradas.
+OUTPUT_TEXT = "text"
+OUTPUT_STRUCTURED = "structured"
+_OUTPUT_KINDS = (OUTPUT_TEXT, OUTPUT_STRUCTURED)
 
-    Ordenadas por número (v2 antes que v10). El endpoint las usa para validar
+
+def output_of_version(version: str) -> str:
+    """Tipo de salida que declara una versión en la clave ``output`` de su examples.yaml.
+
+    Sin la clave, o sin examples.yaml, la versión es de texto libre: así `v1` y
+    `v2`, ya publicadas, no se tocan. Un valor que no es ninguno de los tipos
+    conocidos es un examples.yaml mal escrito y falla con el nombre del archivo.
+    """
+    return _output_at(str(_BASE_DIR / "estimation" / version / "examples.yaml"))
+
+
+@lru_cache(maxsize=32)
+def _output_at(path: str) -> str:
+    """Lee la clave ``output`` una vez por archivo. La caché va por ruta y no por
+    versión, para que un test que cambia ``_BASE_DIR`` no reciba un valor viejo."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            output = (yaml.safe_load(f) or {}).get("output", OUTPUT_TEXT)
+    except FileNotFoundError:
+        return OUTPUT_TEXT
+    if output not in _OUTPUT_KINDS:
+        raise ValueError(
+            f"{path}: output '{output}' no es válido. Valores posibles: {', '.join(_OUTPUT_KINDS)}."
+        )
+    return output
+
+
+def _to_json(value: object) -> str:
+    """Filtro ``json`` de las plantillas: JSON indentado, con tildes legibles.
+
+    El ``tojson`` de Jinja2 escapa los caracteres no ASCII (``Dise\\u00f1o``) y
+    los ejemplos de `v3` tienen que mostrar el JSON tal como lo debe escribir el
+    modelo. Es formato genérico, no decide qué se muestra.
+    """
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def available_versions(output: str = OUTPUT_TEXT) -> list[str]:
+    """Versiones de prompt publicadas de un tipo de salida.
+
+    Una versión publicada es un directorio ``vN/`` con un ``system.j2``. Su tipo
+    lo declara la clave ``output`` de su ``examples.yaml`` (ver
+    ``output_of_version``); por defecto se listan las de texto libre, que son
+    las que acepta ``/estimate``.
+
+    Ordenadas por número (v2 antes que v10). Los endpoints las usan para validar
     ``?prompt_version=`` antes de armar una ruta con lo que mandó el cliente.
     """
-    raiz = _BASE_DIR / "estimation"
-    versiones = [
+    root_dir = _BASE_DIR / "estimation"
+    versions = [
         d.name
-        for d in raiz.iterdir()
-        if d.is_dir() and re.fullmatch(r"v\d+", d.name) and (d / "system.j2").is_file()
+        for d in root_dir.iterdir()
+        if d.is_dir()
+        and re.fullmatch(r"v\d+", d.name)
+        and (d / "system.j2").is_file()
+        and output_of_version(d.name) == output
     ]
-    return sorted(versiones, key=lambda v: int(v[1:]))
+    return sorted(versions, key=lambda v: int(v[1:]))
 
 
 def _round_up(n: float, base: int) -> int:
@@ -144,6 +205,10 @@ def _compute_version_data(version: str) -> dict:
 
         computed_examples.append(
             {
+                # --- Structured response ----------------------------------------------------
+                # Campos propios de la versión (por ejemplo, `summary` y
+                # `confidence_pct` en v3) pasan tal cual; lo calculado se pisa abajo.
+                **ex,
                 "project_type": ex["project_type"],
                 "project_description": ex["project_description"],
                 "phases": computed_phases,
@@ -186,6 +251,9 @@ _env = Environment(
     keep_trailing_newline=True,
 )
 
+# --- Structured response ----------------------------------------------------
+_env.filters["json"] = _to_json
+
 
 def render_estimation_prompt(
     request: EstimationRequest,
@@ -212,6 +280,12 @@ def render_estimation_prompt(
         # system.j2 incluye el examples.j2 de su propia versión con esta variable,
         # así la ruta del include no lleva una versión escrita a mano.
         "version": version,
+        # --- Structured response ----------------------------------------------------
+        # Las reglas de rechazo de v3 salen de las constantes del schema que las
+        # valida, así el prompt y el validador no pueden discrepar.
+        "min_confidence_pct": MIN_CONFIDENCE_PCT,
+        "out_of_scope_prefix": OUT_OF_SCOPE_PREFIX,
+        "unestimated_phase": UNESTIMATED_PHASE,
     }
     system = _env.get_template(f"estimation/{version}/system.j2").render(**context)
     user = _env.get_template(f"estimation/{version}/user.j2").render(**context)

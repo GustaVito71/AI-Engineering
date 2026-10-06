@@ -2,12 +2,12 @@
 
 Recorre todas las piezas reales en un solo flujo:
 
-    _armar_payload + _estimar (cliente de Streamlit)
+    _build_payload + _estimate (cliente de Streamlit)
       → FastAPI con su lifespan (cliente de Redis, caché)
       → EstimationRequest → render del prompt (versión por defecto, v2)
       → LLMWrapper → Router de LiteLLM (primario y respaldo)
       → caché exact-match → limpieza de etiquetas → EstimationResponse
-      → _estimar → texto, versión y avisos para el formulario
+      → _estimate → texto, versión y avisos para el formulario
 
 Lo único simulado es el proveedor, con `mock_response` de LiteLLM (texto o
 excepción), y Redis, con fakeredis detrás del `Redis.from_url` del lifespan. El
@@ -26,17 +26,17 @@ from structlog.testing import capture_logs
 
 from app.config import get_settings
 from app.main import create_app
-from app.routers.estimations import MENSAJE_FALLO_PROVEEDOR, MENSAJE_TIMEOUT
+from app.routers.estimations import PROVIDER_FAILURE_MESSAGE, TIMEOUT_MESSAGE
 from streamlit_app import (
     _ApiError,
-    _armar_payload,
-    _detail_texto,
-    _estimar,
-    _leer_health,
-    _opciones_de_version,
+    _build_payload,
+    _detail_text,
+    _estimate,
+    _read_health,
+    _version_options,
 )
 
-# `_estimar` pasa un `timeout` al cliente HTTP, que es lo correcto contra la API
+# `_estimate` pasa un `timeout` al cliente HTTP, que es lo correcto contra la API
 # real; TestClient lo ignora y avisa en cada llamada. El aviso no aporta nada acá.
 pytestmark = pytest.mark.filterwarnings("ignore:You should not use the 'timeout' argument")
 
@@ -47,7 +47,7 @@ RESPUESTA_DEL_MODELO = "| Fase | Semanas | Coste (EUR) | Confianza (%) |\nTotale
 
 def _payload(descripcion: str = DESCRIPCION) -> dict:
     """Lo que envía el formulario de Streamlit, armado con su misma función."""
-    return _armar_payload(descripcion, "mobile_app", "medium", "phases_table")
+    return _build_payload(descripcion, "mobile_app", "medium", "phases_table")
 
 
 class _Proveedor:
@@ -120,7 +120,7 @@ def test_del_formulario_al_proveedor_y_de_vuelta(stack, proveedor) -> None:
     proveedor.respuesta = f"{RESPUESTA_DEL_MODELO}\n</estimation>"
 
     with stack() as api, capture_logs() as logs:
-        texto, version, avisos = _estimar(API, _payload(), api)
+        texto, version, avisos = _estimate(API, _payload(), api)
 
     # Lo que recibe el formulario: texto limpio, versión por defecto, sin avisos.
     assert texto == RESPUESTA_DEL_MODELO
@@ -145,8 +145,8 @@ def test_del_formulario_al_proveedor_y_de_vuelta(stack, proveedor) -> None:
 
 def test_la_misma_estimacion_sale_de_la_cache(stack, proveedor) -> None:
     with stack() as api, capture_logs() as logs:
-        primera = _estimar(API, _payload(), api)
-        segunda = _estimar(API, _payload(), api)
+        primera = _estimate(API, _payload(), api)
+        segunda = _estimate(API, _payload(), api)
 
     assert primera == segunda
     assert len(proveedor.llamadas) == 1  # la segunda no llegó al proveedor
@@ -158,8 +158,8 @@ def test_la_misma_estimacion_sale_de_la_cache(stack, proveedor) -> None:
 
 def test_otra_descripcion_vuelve_a_llamar_al_proveedor(stack, proveedor) -> None:
     with stack() as api:
-        _estimar(API, _payload(), api)
-        _estimar(API, _payload(DESCRIPCION + " Con panel web para el personal."), api)
+        _estimate(API, _payload(), api)
+        _estimate(API, _payload(DESCRIPCION + " Con panel web para el personal."), api)
 
     assert len(proveedor.llamadas) == 2
 
@@ -169,8 +169,8 @@ def test_la_cache_guarda_el_texto_crudo_y_se_limpia_al_responder(stack, proveedo
     proveedor.respuesta = f"<estimation>\n{RESPUESTA_DEL_MODELO}\n</estimation>"
 
     with stack() as api:
-        _estimar(API, _payload(), api)
-        texto, _version, _avisos = _estimar(API, _payload(), api)
+        _estimate(API, _payload(), api)
+        texto, _version, _avisos = _estimate(API, _payload(), api)
 
     assert texto == RESPUESTA_DEL_MODELO
 
@@ -178,11 +178,11 @@ def test_la_cache_guarda_el_texto_crudo_y_se_limpia_al_responder(stack, proveedo
 def test_el_selector_de_version_llega_hasta_el_proveedor(stack, proveedor) -> None:
     """Las opciones salen del /health real, y la elegida decide el prompt que se envía."""
     with stack() as api:
-        opciones = _opciones_de_version(_leer_health(API, api))
+        opciones = _version_options(_read_health(API, api))
         assert opciones == [("Predeterminada (v2)", None), ("v1", "v1"), ("v2", "v2")]
 
         _etiqueta, elegida = opciones[1]
-        _texto, version, _avisos = _estimar(API, _payload(), api, prompt_version=elegida)
+        _texto, version, _avisos = _estimate(API, _payload(), api, prompt_version=elegida)
 
     assert version == "v1"
     sistema = proveedor.llamadas[0]["messages"][0]["content"]
@@ -194,7 +194,7 @@ def test_el_selector_de_version_llega_hasta_el_proveedor(stack, proveedor) -> No
 
 def test_sin_clave_de_respaldo_el_aviso_llega_al_formulario(stack, proveedor) -> None:
     with stack(ANTHROPIC_API_KEY="") as api:
-        texto, _version, avisos = _estimar(API, _payload(), api)
+        texto, _version, avisos = _estimate(API, _payload(), api)
 
     assert texto == RESPUESTA_DEL_MODELO
     [aviso] = avisos
@@ -203,17 +203,17 @@ def test_sin_clave_de_respaldo_el_aviso_llega_al_formulario(stack, proveedor) ->
 
 def test_sin_clave_del_primario_el_formulario_recibe_el_503(stack, proveedor) -> None:
     with stack(OPENAI_API_KEY="") as api, pytest.raises(_ApiError) as error:
-        _estimar(API, _payload(), api)
+        _estimate(API, _payload(), api)
 
     assert error.value.status == 503
-    assert "OPENAI_API_KEY" in _detail_texto(error.value.detail)
+    assert "OPENAI_API_KEY" in _detail_text(error.value.detail)
     assert proveedor.llamadas == []
 
 
 def test_sin_redis_la_estimacion_sale_igual(stack, proveedor) -> None:
     with stack(REDIS_URL="") as api:
-        primera = _estimar(API, _payload(), api)
-        segunda = _estimar(API, _payload(), api)
+        primera = _estimate(API, _payload(), api)
+        segunda = _estimate(API, _payload(), api)
 
     assert primera == segunda
     assert len(proveedor.llamadas) == 2  # sin caché, las dos van al proveedor
@@ -228,14 +228,14 @@ def test_sin_redis_la_estimacion_sale_igual(stack, proveedor) -> None:
         (
             litellm.Timeout(message="detalle interno", model="gpt-4o-mini", llm_provider="openai"),
             504,
-            MENSAJE_TIMEOUT,
+            TIMEOUT_MESSAGE,
         ),
         (
             litellm.APIConnectionError(
                 message="detalle interno", llm_provider="openai", model="gpt-4o-mini"
             ),
             502,
-            MENSAJE_FALLO_PROVEEDOR,
+            PROVIDER_FAILURE_MESSAGE,
         ),
     ],
     ids=["timeout", "conexion"],
@@ -246,11 +246,11 @@ def test_un_fallo_del_proveedor_llega_al_formulario_en_castellano(
     proveedor.respuesta = excepcion
 
     with stack() as api, capture_logs() as logs, pytest.raises(_ApiError) as error:
-        _estimar(API, _payload(), api)
+        _estimate(API, _payload(), api)
 
     assert error.value.status == codigo
-    assert _detail_texto(error.value.detail) == mensaje
-    assert "detalle interno" not in _detail_texto(error.value.detail)
+    assert _detail_text(error.value.detail) == mensaje
+    assert "detalle interno" not in _detail_text(error.value.detail)
     [fallo] = _eventos(logs, "estimacion_fallida")
     assert fallo["codigo_http"] == codigo
     assert "detalle interno" in fallo["detalle"]
@@ -262,10 +262,10 @@ def test_un_fallo_no_queda_en_la_cache(stack, proveedor) -> None:
     )
     with stack() as api:
         with pytest.raises(_ApiError):
-            _estimar(API, _payload(), api)
+            _estimate(API, _payload(), api)
 
         proveedor.respuesta = RESPUESTA_DEL_MODELO
-        texto, _version, _avisos = _estimar(API, _payload(), api)
+        texto, _version, _avisos = _estimate(API, _payload(), api)
 
     assert texto == RESPUESTA_DEL_MODELO
     assert len(proveedor.llamadas) == 2
@@ -274,8 +274,8 @@ def test_un_fallo_no_queda_en_la_cache(stack, proveedor) -> None:
 def test_una_entrada_invalida_no_llega_al_proveedor(stack, proveedor) -> None:
     """La API valida aunque el formulario no lo haga (otro cliente, por ejemplo)."""
     with stack() as api, pytest.raises(_ApiError) as error:
-        _estimar(API, _payload("corta"), api)
+        _estimate(API, _payload("corta"), api)
 
     assert error.value.status == 422
-    assert _detail_texto(error.value.detail)
+    assert _detail_text(error.value.detail)
     assert proveedor.llamadas == []
