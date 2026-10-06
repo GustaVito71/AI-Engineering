@@ -2,7 +2,9 @@
 
 La interfaz es un cliente liviano de una sola petición: se completa un
 formulario tipado y se recibe una estimación en texto libre o, con «Salida
-estructurada», como datos (fases, equipo y totales). Nunca toca una API
+estructurada», como datos (fases, equipo y totales). Con «Salida renderizada»
+llegan los mismos datos más la presentación que pidió el formato de salida,
+escrita por el modelo. Nunca toca una API
 key de proveedor; el backend lee sus propias claves de Settings (.env). El
 frontend solo necesita la URL base de la API en ejecución
 (`ESTIMATOR_API_BASE_URL`, por defecto http://localhost:8001).
@@ -212,19 +214,21 @@ def _estimate_structured(
     payload: dict,
     client: httpx.Client | None = None,
     prompt_version: str | None = None,
+    path: str = "/api/v1/estimate/structured",
 ) -> tuple[dict, str, list[str], bool]:
     """Envía el formulario a `/api/v1/estimate/structured`.
 
     Devuelve `(estimation, prompt_version, avisos, cached)`, con `estimation`
     como el dict de fases, equipo, totales, resumen y confianza, y `cached` en
     True si la estimación salió de la caché del servicio. Errores y `client`
-    como en `_estimate`.
+    como en `_estimate`. `path` lo cambia `_estimate_rendered`, que tiene la
+    misma respuesta.
     """
     owns_client = client is None
     http_client = client if client is not None else httpx.Client()
     try:
         response = http_client.post(
-            f"{api_base}/api/v1/estimate/structured",
+            f"{api_base}{path}",
             json=payload,
             params={"prompt_version": prompt_version} if prompt_version else None,
             timeout=None,
@@ -245,6 +249,66 @@ def _estimate_structured(
     finally:
         if owns_client:
             http_client.close()
+
+
+# --- Rendered response ------------------------------------------------------
+# Con «Salida renderizada» el formulario llama a `/api/v1/estimate/rendered`. La
+# respuesta es la de la salida estructurada más `estimation.rendered`: la
+# presentación que pidió `output_format`, escrita por el modelo en Markdown y
+# validada por el servicio contra las cifras. Acá se muestra tal cual.
+
+# Interruptores de tipo de salida (claves de `st.session_state`). Son
+# excluyentes: encender uno apaga el otro, y con los dos apagados la salida es
+# texto libre.
+STRUCTURED_TOGGLE = "structured_output"
+RENDERED_TOGGLE = "rendered_output"
+
+
+def _switch_off_other(state, active: str, other: str) -> None:
+    """Callback de un interruptor: si quedó encendido, apaga el otro.
+
+    Recibe el estado de la sesión como parámetro para poder probarlo con un dict.
+    """
+    if state.get(active):
+        state[other] = False
+
+
+def _output_mode(state) -> str:
+    """'rendered', 'structured' o 'text', según el interruptor encendido."""
+    if state.get(RENDERED_TOGGLE):
+        return "rendered"
+    if state.get(STRUCTURED_TOGGLE):
+        return "structured"
+    return "text"
+
+
+def _rendered_version_options(health: dict | None) -> list[tuple[str, str | None]]:
+    """Como `_version_options`, con las versiones de salida renderizada de `/health`."""
+    if not health:
+        return [("Predeterminada", None)]
+    configured = health.get("rendered_prompt_version")
+    label = f"Predeterminada ({configured})" if configured else "Predeterminada"
+    return [(label, None)] + [(v, v) for v in health.get("rendered_prompt_versions") or []]
+
+
+def _estimate_rendered(
+    api_base: str,
+    payload: dict,
+    client: httpx.Client | None = None,
+    prompt_version: str | None = None,
+) -> tuple[dict, str, list[str], bool]:
+    """Envía el formulario a `/api/v1/estimate/rendered`. Devuelve lo mismo que
+    `_estimate_structured`; `estimation` trae además `rendered`."""
+    return _estimate_structured(
+        api_base,
+        payload,
+        client,
+        prompt_version=prompt_version,
+        path="/api/v1/estimate/rendered",
+    )
+
+
+# --- Structured response ----------------------------------------------------
 
 
 def _format_number(n: float) -> str:
@@ -311,12 +375,7 @@ def _show_structured(estimation: dict, output_format: str) -> None:
         return
 
     st.markdown(estimation["summary"])
-    totals = estimation["totals"]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Horas", _format_number(totals["hours"]))
-    c2.metric("Coste (EUR)", _format_number(totals["cost_eur"]))
-    c3.metric("Duración", _format_weeks(totals["duration_weeks"]))
-    c4.metric("Confianza", f"{estimation['confidence_pct']} %")
+    _show_metrics(estimation)
 
     if output_format == "phases_table":
         st.dataframe(_phase_rows(estimation), hide_index=True, use_container_width=True)
@@ -326,6 +385,21 @@ def _show_structured(estimation: dict, output_format: str) -> None:
         for paragraph in _narrative(estimation):
             st.markdown(paragraph)
 
+    _show_team_and_risks(estimation)
+
+
+def _show_metrics(estimation: dict) -> None:
+    """Totales y confianza global, como métricas en una fila."""
+    totals = estimation["totals"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Horas", _format_number(totals["hours"]))
+    c2.metric("Coste (EUR)", _format_number(totals["cost_eur"]))
+    c3.metric("Duración", _format_weeks(totals["duration_weeks"]))
+    c4.metric("Confianza", f"{estimation['confidence_pct']} %")
+
+
+def _show_team_and_risks(estimation: dict) -> None:
+    """Equipo, y supuestos y riesgos por fase cuando el nivel de detalle los trae."""
     st.markdown(f"**Equipo:** {_team_summary(estimation)}")
 
     # Supuestos y riesgos solo existen con nivel de detalle medio o detallado.
@@ -337,6 +411,25 @@ def _show_structured(estimation: dict, output_format: str) -> None:
                 st.markdown(f"- {assumption}")
             for risk in phase["risks"]:
                 st.markdown(f"- **Riesgo:** {risk['risk']} — **Mitigación:** {risk['mitigation']}")
+
+
+# --- Rendered response ------------------------------------------------------
+def _show_rendered(estimation: dict) -> None:
+    """Muestra la estimación de la salida renderizada: la presentación del modelo.
+
+    `rendered` ya tiene el formato elegido en el formulario (el servicio lo
+    validó), así que no se arma nada acá: se muestra tal cual, entre las
+    métricas y el equipo. Un rechazo se muestra como aviso, igual que en la
+    salida estructurada.
+    """
+    if _is_out_of_scope(estimation):
+        st.info(estimation["rendered"])
+        return
+
+    st.markdown(estimation["summary"])
+    _show_metrics(estimation)
+    st.markdown(estimation["rendered"])
+    _show_team_and_risks(estimation)
 
 
 def main() -> None:
@@ -380,12 +473,29 @@ def main() -> None:
     # --- Structured response ----------------------------------------------------
     # El interruptor decide el endpoint y, con él, qué versiones se ofrecen: cada
     # endpoint acepta solo las de su tipo de salida.
-    structured = st.sidebar.toggle(
+    st.sidebar.toggle(
         "Salida estructurada",
-        key="structured_output",
+        key=STRUCTURED_TOGGLE,
         help="Pide la estimación como datos (fases, equipo y totales) en vez de texto libre.",
+        on_change=_switch_off_other,
+        args=(st.session_state, STRUCTURED_TOGGLE, RENDERED_TOGGLE),
     )
-    if structured:
+    # --- Rendered response ------------------------------------------------------
+    st.sidebar.toggle(
+        "Salida renderizada",
+        key=RENDERED_TOGGLE,
+        help=(
+            "Pide los mismos datos y, además, la presentación del formato de salida "
+            "escrita por el modelo y validada contra las cifras."
+        ),
+        on_change=_switch_off_other,
+        args=(st.session_state, RENDERED_TOGGLE, STRUCTURED_TOGGLE),
+    )
+    mode = _output_mode(st.session_state)
+    if mode == "rendered":
+        options = _rendered_version_options(st.session_state.get("health"))
+        help_text = "Predeterminada usa RENDERED_PROMPT_VERSION del servicio."
+    elif mode == "structured":
         options = _structured_version_options(st.session_state.get("health"))
         help_text = "Predeterminada usa STRUCTURED_PROMPT_VERSION del servicio."
     else:
@@ -398,7 +508,7 @@ def main() -> None:
         help=help_text,
         # Una clave por tipo: al cambiar el interruptor no queda elegida una
         # versión del otro tipo.
-        key=f"version_{'structured' if structured else 'text'}",
+        key=f"version_{mode}",
     )
 
     st.title("📋 Estimá un proyecto")
@@ -415,7 +525,9 @@ def main() -> None:
         for warning in result.get("warnings") or []:
             st.warning(warning)
         # --- Structured response ----------------------------------------------------
-        if "estimation" in result:
+        if "estimation" in result and "rendered" in result["estimation"]:
+            _show_rendered(result["estimation"])
+        elif "estimation" in result:
             _show_structured(result["estimation"], result["output_format"])
         else:
             st.markdown(result["text"])
@@ -468,8 +580,9 @@ def main() -> None:
     payload = _build_payload(cleaned, project_type, detail_level, output_format)
     try:
         # --- Structured response ----------------------------------------------------
-        if structured:
-            estimation, prompt_version, warnings, cached = _estimate_structured(
+        if mode != "text":
+            estimate = _estimate_rendered if mode == "rendered" else _estimate_structured
+            estimation, prompt_version, warnings, cached = estimate(
                 api_base, payload, prompt_version=chosen_prompt_version
             )
             st.session_state["resultado"] = {
