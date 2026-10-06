@@ -16,7 +16,7 @@ from instructor.core import InstructorRetryException
 from litellm import Router, completion_cost
 
 from app.config import API_KEY_VARIABLES, LLMConfigurationError, Settings, provider_from_model
-from app.schemas.structured_estimation import StructuredResult
+from app.schemas.structured_estimation import RenderedResult, StructuredResult
 from app.tracing import emit
 
 
@@ -245,6 +245,8 @@ class LLMWrapper:
         user_prompt: str,
         prompt_version: str,
         max_tokens: int | None = None,
+        response_model: type[StructuredResult] = StructuredResult,
+        context: dict[str, Any] | None = None,
     ) -> StructuredCallResult:
         """Estimación validada contra `StructuredResult`, con reintentos y caché.
 
@@ -258,6 +260,11 @@ class LLMWrapper:
         no solo la que se aceptó. En la caché se guarda el JSON validado como
         `content`, con la misma forma que las estimaciones de texto.
 
+        `response_model` es el schema que se le exige al modelo: `StructuredResult`
+        (v3) o `RenderedResult` (v4). `context` llega a los validadores (en v4, el
+        `output_format` de la request); se usa tanto con la respuesta del modelo
+        como al leer la caché.
+
         Errores:
         - `StructuredOutputError`: ningún intento cumplió el schema.
         - Las excepciones de LiteLLM (Timeout, APIConnectionError...) llegan
@@ -268,7 +275,10 @@ class LLMWrapper:
 
         cache_key = self._cache.make_key(system_prompt, user_prompt)
         cached = await self._cache.get(cache_key)
-        estimation = _cached_estimation(cached)
+        estimation = _cached_estimation(cached, response_model, context)
+        output_kind = (
+            "renderizada" if issubclass(response_model, RenderedResult) else "estructurada"
+        )
         if estimation is not None:
             result = StructuredCallResult(
                 content=cached["content"],
@@ -282,7 +292,7 @@ class LLMWrapper:
                 estimation=estimation,
                 attempts=0,
             )
-            self._log_completion(result, start, salida="estructurada", intentos=result.attempts)
+            self._log_completion(result, start, salida=output_kind, intentos=result.attempts)
             return result
 
         # Un cliente por llamada: el hook junta las respuestas de ESTA estimación,
@@ -297,7 +307,8 @@ class LLMWrapper:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                response_model=StructuredResult,
+                response_model=response_model,
+                context=context,
                 max_retries=self._structured_max_retries,
                 max_tokens=max_tokens or self._max_tokens,
                 temperature=0.1,
@@ -313,10 +324,10 @@ class LLMWrapper:
                 last_error=str(cause or exc),
             ) from None
 
-        # Instructor devuelve una subclase propia de StructuredResult (le agrega
-        # sus métodos). Se reconstruye la clase exacta para que una estimación
-        # nueva y una de la caché sean el mismo tipo y se comparen iguales.
-        estimation = StructuredResult.model_validate(estimation.model_dump())
+        # Instructor devuelve una subclase propia del schema (le agrega sus
+        # métodos). Se reconstruye la clase exacta para que una estimación nueva
+        # y una de la caché sean el mismo tipo y se comparen iguales.
+        estimation = response_model.model_validate(estimation.model_dump(), context=context)
 
         deployment_id = (getattr(response, "_hidden_params", None) or {}).get("model_id")
         model = self._model_by_id.get(deployment_id, response.model)
@@ -342,7 +353,7 @@ class LLMWrapper:
                 "cost_usd": result.cost_usd,
             },
         )
-        self._log_completion(result, start, salida="estructurada", intentos=result.attempts)
+        self._log_completion(result, start, salida=output_kind, intentos=result.attempts)
         return result
 
 
@@ -368,7 +379,11 @@ class StructuredOutputError(Exception):
         self.last_error = last_error
 
 
-def _cached_estimation(cached: dict | None) -> StructuredResult | None:
+def _cached_estimation(
+    cached: dict | None,
+    response_model: type[StructuredResult] = StructuredResult,
+    context: dict[str, Any] | None = None,
+) -> StructuredResult | None:
     """La estimación guardada en la caché, o None si no hay o ya no cumple el schema.
 
     Una entrada que no valida (por ejemplo, porque el schema cambió) se trata
@@ -377,7 +392,7 @@ def _cached_estimation(cached: dict | None) -> StructuredResult | None:
     if not cached:
         return None
     try:
-        return StructuredResult.model_validate_json(cached["content"])
+        return response_model.model_validate_json(cached["content"], context=context)
     except (KeyError, ValueError):
         return None
 

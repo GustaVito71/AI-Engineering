@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     # independiente de LLM_MAX_RETRIES, que reintenta los fallos del proveedor.
     structured_max_retries: int = 2
 
+    # --- Rendered response ------------------------------------------------------
+    # Versión de prompt por defecto de POST /api/v1/estimate/rendered. Tiene que
+    # ser de salida renderizada (`output: rendered` en su examples.yaml). Usa los
+    # mismos reintentos que la salida estructurada (STRUCTURED_MAX_RETRIES).
+    rendered_prompt_version: str = "v4"
+
     # --- Caché. REDIS_URL vacío = caché desactivado, sin tocar código.
     redis_url: str = "redis://localhost:6379/0"
     cache_ttl: int = 86400
@@ -272,6 +278,8 @@ class Settings(BaseSettings):
         """
         if not self.structured_prompt_version:
             raise ValueError("STRUCTURED_PROMPT_VERSION no puede estar vacío")
+        if not self.rendered_prompt_version:
+            raise ValueError("RENDERED_PROMPT_VERSION no puede estar vacío")
         if self.structured_max_retries < 0:
             raise ValueError(
                 f"STRUCTURED_MAX_RETRIES={self.structured_max_retries} no puede ser negativo."

@@ -30,7 +30,9 @@ totales, y el resumen y la confianza llegan al final, cuando ya estimó.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+import re
+
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 # Por debajo de esta confianza (en %), la estimación tiene que rechazarse.
 MIN_CONFIDENCE_PCT = 30
@@ -207,20 +209,24 @@ class StructuredResult(BaseModel):
         hours = sum(f.hours for f in self.phases)
         if self.totals.hours != hours:
             warnings.append(
-                f"El total de horas declarado ({_format_number(self.totals.hours)}) no coincide con "
-                f"la suma de las fases ({_format_number(hours)})."
+                f"El total de horas declarado ({format_number(self.totals.hours)}) no coincide con "
+                f"la suma de las fases ({format_number(hours)})."
             )
         cost = sum(f.cost_eur for f in self.phases)
         if abs(self.totals.cost_eur - cost) >= 0.005:
             warnings.append(
-                f"El coste total declarado ({_format_number(self.totals.cost_eur)} EUR) no coincide "
-                f"con la suma de las fases ({_format_number(cost)} EUR)."
+                f"El coste total declarado ({format_number(self.totals.cost_eur)} EUR) no coincide "
+                f"con la suma de las fases ({format_number(cost)} EUR)."
             )
         return warnings
 
 
-def _format_number(n: float) -> str:
-    """29850 -> '29.850'; 62.5 -> '62,50'. Formato castellano para los avisos."""
+def format_number(n: float) -> str:
+    """29850 -> '29.850'; 62.5 -> '62,50'. Formato castellano de las cifras.
+
+    Lo usan los avisos de totales y, en `v4`, los ejemplos del prompt y el
+    validador de `rendered`: los tres escriben los números igual.
+    """
     if float(n).is_integer():
         return f"{int(n):,}".replace(",", ".")
     return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -241,4 +247,161 @@ class StructuredEstimationResponse(BaseModel):
             "Avisos para el usuario (respaldo no disponible, totales que no cuadran). "
             "Vacío si no hay ninguno."
         ),
+    )
+
+
+# --- Rendered response ------------------------------------------------------
+# `v4`: además de las cifras, el modelo escribe la presentación que eligió el
+# usuario (`output_format`) en `rendered`. El validador comprueba la forma pedida
+# y que las cifras del texto sean las de los campos: si no, Instructor re-pregunta
+# y, agotados los intentos, el endpoint responde 502.
+
+# Líneas de tabla Markdown, fila separadora e ítems de lista.
+_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_SEPARATOR = re.compile(r"^\s*\|?(\s*:?-{3,}:?\s*\|)+\s*:?-{0,}:?\s*\|?\s*$")
+_NUMBERED_ITEM = re.compile(r"^\s*\d+[.)]\s+\S")
+_BULLET_ITEM = re.compile(r"^\s*[-*+]\s+\S")
+
+# Formatos que acepta `rendered`: los valores de `OutputFormat`.
+_RENDERED_FORMATS = ("phases_table", "line_items", "narrative")
+
+
+def _number_spellings(n: float) -> list[str]:
+    """Formas válidas de escribir una cifra en `rendered`: 1.320, o 1320 sin separador."""
+    spellings = [format_number(n)]
+    if float(n).is_integer():
+        spellings.append(str(int(n)))
+    return spellings
+
+
+def _mentions(text: str, n: float) -> bool:
+    """True si `text` contiene la cifra `n` como número entero, no dentro de otro.
+
+    `130` no cuenta como mención si aparece dentro de `1.130` o de `130,5`.
+    """
+    for spelling in _number_spellings(n):
+        pattern = rf"(?<![\d.,]){re.escape(spelling)}(?![\d]|[.,]\d)"
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+class RenderedResult(StructuredResult):
+    """Estimación de `v4`: la de `v3` más su presentación en Markdown.
+
+    `rendered` va al final del schema: el modelo decide las cifras antes de
+    escribir el texto que las muestra.
+
+    El validador necesita el `output_format` de la request, que no es parte de la
+    respuesta: lo recibe en el contexto de validación (`context={"output_format":
+    ...}`). Sin contexto solo se validan los campos, como en `v3`; el servicio
+    siempre lo pasa.
+    """
+
+    rendered: str = Field(
+        min_length=10,
+        max_length=6000,
+        description=(
+            "La estimación presentada en Markdown con el formato que pide el prompt "
+            "(tabla, partidas numeradas o prosa), con las mismas cifras que los campos."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _rendered_matches_format(self, info: ValidationInfo) -> RenderedResult:
+        output_format = (info.context or {}).get("output_format")
+        if output_format is None:
+            return self
+        if output_format not in _RENDERED_FORMATS:
+            # Error de programación, no del modelo: no se re-pregunta por esto.
+            raise TypeError(f"output_format '{output_format}' no es un formato de rendered.")
+
+        lines = self.rendered.splitlines()
+        if self.out_of_scope:
+            if not self.rendered.lstrip().startswith(OUT_OF_SCOPE_PREFIX):
+                raise ValueError(
+                    f"En una estimación fuera de alcance, rendered empieza con "
+                    f"«{OUT_OF_SCOPE_PREFIX}» y explica qué falta, igual que summary."
+                )
+            if any(_TABLE_ROW.match(x) or _NUMBERED_ITEM.match(x) for x in lines):
+                raise ValueError(
+                    "En una estimación fuera de alcance, rendered es solo texto: sin tabla ni lista."
+                )
+            return self
+
+        if output_format == "phases_table":
+            blocks = self._table_rows(lines)
+        elif output_format == "line_items":
+            blocks = self._numbered_items(lines)
+        else:
+            blocks = self._paragraphs(lines)
+
+        missing = [
+            p.name
+            for p in self.phases
+            if not any(
+                p.name.casefold() in b.casefold()
+                and _mentions(b, p.hours)
+                and _mentions(b, p.cost_eur)
+                for b in blocks
+            )
+        ]
+        if missing:
+            where = {
+                "phases_table": "una fila de la tabla",
+                "line_items": "una partida numerada",
+                "narrative": "un párrafo",
+            }[output_format]
+            raise ValueError(
+                f"En rendered, cada fase necesita {where} con su nombre, sus horas y su "
+                f"coste, con las mismas cifras que phases; falta o no coincide: "
+                f"{', '.join(missing)}."
+            )
+        if not (
+            _mentions(self.rendered, self.totals.hours)
+            and _mentions(self.rendered, self.totals.cost_eur)
+        ):
+            raise ValueError(
+                "rendered tiene que mostrar los totales de totals: "
+                f"{format_number(self.totals.hours)} horas y "
+                f"{format_number(self.totals.cost_eur)} EUR."
+            )
+        return self
+
+    @staticmethod
+    def _table_rows(lines: list[str]) -> list[str]:
+        rows = [x for x in lines if _TABLE_ROW.match(x)]
+        if len(rows) < 3 or not any(_TABLE_SEPARATOR.match(x) for x in rows[1:2]):
+            raise ValueError(
+                "Con output_format phases_table, rendered es una tabla Markdown: fila de "
+                "cabecera, fila separadora (|---|) y una fila por fase."
+            )
+        return rows[2:]
+
+    @staticmethod
+    def _numbered_items(lines: list[str]) -> list[str]:
+        items = [x for x in lines if _NUMBERED_ITEM.match(x)]
+        if not items:
+            raise ValueError(
+                "Con output_format line_items, rendered es una lista numerada (1., 2., …) "
+                "con una partida por fase."
+            )
+        return items
+
+    @staticmethod
+    def _paragraphs(lines: list[str]) -> list[str]:
+        if any(
+            _TABLE_ROW.match(x) or _NUMBERED_ITEM.match(x) or _BULLET_ITEM.match(x) for x in lines
+        ):
+            raise ValueError(
+                "Con output_format narrative, rendered es prosa en párrafos: sin tablas ni listas."
+            )
+        return [p for p in "\n".join(lines).split("\n\n") if p.strip()]
+
+
+class RenderedEstimationResponse(StructuredEstimationResponse):
+    """Respuesta de `POST /api/v1/estimate/rendered`."""
+
+    estimation: RenderedResult = Field(
+        description="Estimación validada contra el schema, con su presentación en rendered."
     )

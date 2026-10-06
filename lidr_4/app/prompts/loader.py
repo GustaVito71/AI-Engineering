@@ -38,6 +38,7 @@ from app.schemas.structured_estimation import (
     MIN_CONFIDENCE_PCT,
     OUT_OF_SCOPE_PREFIX,
     UNESTIMATED_PHASE,
+    format_number,
 )
 
 _BASE_DIR = Path(__file__).resolve().parent
@@ -55,7 +56,11 @@ _ROLE_FIELDS = ("label", "plural", "eur_per_hour")
 # libre y `/estimate/structured` las estructuradas.
 OUTPUT_TEXT = "text"
 OUTPUT_STRUCTURED = "structured"
-_OUTPUT_KINDS = (OUTPUT_TEXT, OUTPUT_STRUCTURED)
+# --- Rendered response ------------------------------------------------------
+# `v4`: salida estructurada con la presentación (`rendered`) escrita por el modelo.
+# La acepta solo `/estimate/rendered`.
+OUTPUT_RENDERED = "rendered"
+_OUTPUT_KINDS = (OUTPUT_TEXT, OUTPUT_STRUCTURED, OUTPUT_RENDERED)
 
 
 def output_of_version(version: str) -> str:
@@ -253,6 +258,11 @@ _env = Environment(
 
 # --- Structured response ----------------------------------------------------
 _env.filters["json"] = _to_json
+
+# --- Rendered response ------------------------------------------------------
+# Cifras en formato castellano (29.850) en los `rendered` de los ejemplos de v4:
+# la misma función que usa el validador, así ejemplo y validación no discrepan.
+_env.filters["number"] = format_number
 
 
 def render_estimation_prompt(

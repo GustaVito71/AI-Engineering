@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse
 
 from .cache import close_cache_client, create_cache_client
 from .config import LLMConfigurationError, Settings, get_settings
-from .prompts.loader import OUTPUT_STRUCTURED, available_versions
+from .prompts.loader import OUTPUT_RENDERED, OUTPUT_STRUCTURED, available_versions
 from .routers.estimations import router as estimations_router
 from .services.cache import create_estimation_cache
 from .services.llm_wrapper import fallback_warning
@@ -204,6 +204,10 @@ def create_app() -> FastAPI:
             # que /estimate rechaza.
             "structured_prompt_version": settings.structured_prompt_version,
             "structured_prompt_versions": available_versions(OUTPUT_STRUCTURED),
+            # --- Rendered response ------------------------------------------------------
+            # Lo mismo para POST /api/v1/estimate/rendered.
+            "rendered_prompt_version": settings.rendered_prompt_version,
+            "rendered_prompt_versions": available_versions(OUTPUT_RENDERED),
         }
 
     _complete_openapi_schema(app)

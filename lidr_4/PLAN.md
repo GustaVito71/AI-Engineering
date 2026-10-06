@@ -235,6 +235,28 @@ ya producían `v1` y `v2`, por fases.
   declara su tipo de salida en `examples.yaml` (`output`), y cada endpoint
   acepta solo las de su tipo.
 
+**Salida renderizada (`v4`, 6 de octubre de 2026).** Con `v3`, `output_format` no
+entra al prompt y la presentación la arma el frontend. `v4` lo pone en el prompt,
+porque el formato de salida es un parámetro del usuario como el nivel de detalle,
+y porque lo que ve el usuario tiene que poder validarse (guardrail de salida):
+
+- **Dónde va el texto:** en un campo propio, `rendered`, de `RenderedResult`
+  (subclase de `StructuredResult`, al final del schema). El prompt pide la tabla,
+  la lista o la prosa *en ese campo*; así no compite con el schema, que es lo
+  que le pasa a `session_4_live`, donde el prompt pide una tabla Markdown como
+  respuesta y a la vez un objeto estructurado.
+- **Cómo se valida:** el validador recibe `output_format` por el contexto de
+  validación de Instructor y comprueba la forma pedida y que las horas y el coste
+  de cada fase y de los totales aparezcan en `rendered` con las cifras de los
+  campos. Si no cumple, re-pregunta; agotados los intentos, 502 (no un aviso: un
+  texto que contradice los datos no se le muestra al usuario).
+- **Regla:** `output_format` cambia el texto, nunca las cifras. Los totales mal
+  sumados siguen siendo un aviso (se compara `rendered` con los campos, no con la
+  suma).
+- **Convivencia:** `v3` queda igual. `v4` declara `output: rendered` y tiene su
+  endpoint, `POST /api/v1/estimate/rendered`, con `RENDERED_PROMPT_VERSION`. En el
+  formulario, un segundo interruptor, excluyente con «Salida estructurada».
+
 **Lo que queda de WU8:** el streaming con `ijson` y los eventos por fase del §4.
 
 ### 3.4 El exchange de alcance, y por qué está documentado
@@ -383,7 +405,7 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU5**~~ | Gateway async: `Router` con primario y respaldo, claves por proveedor, coste con `completion_cost()`, provider vía `_hidden_params["model_id"]`. Respaldo opcional: sin su clave el servicio sigue con el primario y avisa al usuario (`warnings` en la respuesta y en `/health`). Caché exact-match fail soft sobre un único cliente de Redis. Errores 503 (falta la clave del primario), 502 y 504 con mensaje limpio. Trazabilidad con `estimacion_completada` / `estimacion_fallida`; los logs de LiteLLM quedan en `WARNING` con el formato de structlog, sin prompt ni claves. Devuelve `text: str` sin parsear. 61 tests (wrapper, caché, endpoint, logs), independientes del `.env` y del proveedor primario. **Cerrado** | Resuelto |
 | ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. Validación de longitud en el formulario sin `max_chars` (Streamlit descartaba entero un pegado de más de 2000 caracteres). 15 tests con transporte mockeado. **Cerrado y probado contra la API real** el 3 de octubre de 2026, con todo en Docker: estimación con OpenAI, caché en Redis (8,3 s → 0,5 ms en la repetición), trazabilidad completa y prompt `v2`. Ver §3.4 para lo que mostró la salida del modelo | Resuelto |
 | ~~**WU7**~~ | Slice vertical end-to-end con `mock_response`: `test/test_e2e.py` recorre formulario de Streamlit → API (lifespan, caché) → prompt `v2` → Router de LiteLLM → caché → formulario, con solo el proveedor y Redis simulados. El armado del cuerpo del formulario pasa a `_build_payload()` para que el test use el mismo que la interfaz. 11 tests. **Cerrado** | Resuelto |
-| **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
+| **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Ampliado** (6 de octubre de 2026): salida renderizada, con `RenderedResult`, prompt `v4` (`output_format` en el prompt, presentación en `rendered` validada contra las cifras), `POST /api/v1/estimate/rendered` e interruptor «Salida renderizada», excluyente con el anterior (§3.3). 127 tests nuevos (505 en total). **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
 | **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
 | **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
@@ -541,6 +563,14 @@ gratis porque su clave es SHA-256 del system prompt completo. El caché semánti
 embebe **solo la consulta del usuario**: subir a `v2` sin tocar la clave
 devolvería estimaciones de `v1` sin avisar. Output silenciosamente incorrecto.
 
+**`output_format` entra al prompt en `v4` y no en `v3` (6 de octubre de 2026).**
+En `v3` el servicio devuelve datos y el cliente decide la presentación. En `v4`
+la presentación la escribe el modelo y la valida el servicio, porque el prompt
+compone parámetros del usuario y un guardrail de salida necesita saber qué se
+pidió. Conviven: `v3` es inmutable y una versión nueva es la forma de cambiar el
+comportamiento (§3.3). El texto va en `rendered` y no como respuesta entera, para
+que el formato y el schema no compitan.
+
 **Cachear después de validar, siempre.** Con async el coste no existe hasta que
 el stream cierra. Cachear al inicio significaría cachear un coste unknowable y un
 JSON sin verificar. Es la política, no una preferencia.
@@ -555,7 +585,8 @@ JSON sin verificar. Es la política, no una preferencia.
 | El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | **No aplica**: el contrato de WU8 es por fases, sin dependencias (§3.3) |
 | `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU9 |
 | El total no cuadra con la suma de las fases | Ya ocurrió en la prueba real (29.850 € frente a 29.750 €). En `/estimate` llega así al usuario | **Mitigado en `/estimate/structured`**: se detecta y llega como aviso (§3.3). En `/estimate` sigue sin detectarse: el texto no se parsea |
-| La salida estructurada no cumple el schema en ningún intento | 502 con `STRUCTURED_MAX_RETRIES + 1` llamadas pagadas | El coste de los intentos queda en el log (`estimacion_fallida`) |
+| La salida estructurada o renderizada no cumple el schema en ningún intento | 502 con `STRUCTURED_MAX_RETRIES + 1` llamadas pagadas | El coste de los intentos queda en el log (`estimacion_fallida`) |
+| El validador de `rendered` rechaza una respuesta correcta | El modelo escribe una cifra en una forma que el validador no acepta (`34 050`, `34k`, `34.050,00`): cada rechazo es un reintento pagado y, si se repite, un 502. Con «Detallado» y narrativa, `rendered` alarga la respuesta y puede acercarse a `LLM_MAX_TOKENS` (4000) | **Sin medir.** Probar `v4` con el modelo real en los 9 casos (formato × nivel de detalle), contar los reintentos en `estimacion_completada` (`intentos`) y, si aparecen, sumar esas formas al validador o subir `LLM_MAX_TOKENS` (§3.3) |
 | El modelo copia etiquetas del prompt (`</estimation>`) | Texto sucio para el usuario | **Mitigado**: el endpoint las quita (§3.4) |
 | Caché semántico sirve una estimación de otro dominio | Resultado plausible pero fuera de tema | Namespace por `prompt_version` + umbral alto, WU10 |
 | Deriva de precios del modelo | Coste reportado ≠ coste real | `completion_cost()` se recalcula, no se cachea el precio |
