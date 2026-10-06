@@ -22,3 +22,6 @@ build/
 # Tooling local
 .odd/
 .playwright-mcp/
+
+# SynCE
+datos/
