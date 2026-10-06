@@ -121,14 +121,14 @@ sería cambiar la pregunta.
 El techo solo puede **estrechar** el contrato, nunca hacerlo más laxo. Con
 `min < 20` o `max > 2000` el `Field` sigue cortando pero el parche de OpenAPI
 escribe el número laxo, así que Swagger prometería un rango que el servicio no
-acepta. `Settings.validar_techo_descripcion` rechaza esas dos direcciones al
+acepta. `Settings.validate_description_ceiling` rechaza esas dos direcciones al
 arrancar: es un `.env` mal puesto, y su síntoma como 422 en producción sería
 inexplicable.
 
 El default es 20/2000, o sea el contrato mismo. Con 50/5000 —el valor de WU1—
 el `min_length=20` del schema no se cumpliría nunca y nadie se enteraría.
 
-`CONTRATO_MIN_CHARS` y `CONTRATO_MAX_CHARS` están duplicados en `app/config.py`
+`CONTRACT_MIN_CHARS` y `CONTRACT_MAX_CHARS` están duplicados en `app/config.py`
 porque config no puede importar el schema sin ciclo (el schema importa
 `get_settings`). Un test vigila que no se desincronicen.
 
@@ -187,26 +187,55 @@ líneas sueltas del `.j2`. Viven en `examples.yaml` y alimentan tanto `<scope>` 
 los ejemplos, y `test_prompts.py` comprueba que los ejemplos cuadren con ellos. Lo
 que sigue sin test es que **el modelo** respete esas reglas en su respuesta.
 
-### 3.3 `SOLICITUD_ESTIMACION` — capa 3, contrato del LLM (WU8)
+### 3.3 `StructuredResult` — capa 3, contrato del LLM (WU8)
 
-**Todavía no implementado.** Se diseña en WU8, cuando exista el prompt de WU4 que
-tiene que producir esta forma.
+**Implementado el 5 de octubre de 2026, sin streaming.** Vive en
+`app/schemas/structured_estimation.py` y lo produce el prompt `v3`. La forma final
+no es la de tareas con `depende_de` que se había esbozado: es la del desglose que
+ya producían `v1` y `v2`, por fases.
 
-Lo que se sabe hoy, y no es mucho:
+- **Forma:** `phases` (nombre, resumen, semanas, horas, coste, confianza,
+  supuestos y riesgos con su mitigación), `team` (rol y personas), `totals`
+  (horas, coste y semanas), `summary` y `confidence_pct` globales. `phases` va
+  primero, por la reserva 1 de WU0 (§7); el resumen y la confianza, al final.
+- **Cómo se obtiene:** `StructuredResult` (Pydantic) → Instructor → Router de
+  LiteLLM. Instructor envía el schema como `response_format` (modo `JSON_SCHEMA`)
+  y, si la respuesta no cumple, re-pregunta con el error de validación hasta
+  `STRUCTURED_MAX_RETRIES` veces. Va sobre `Router.acompletion`, así que el
+  Router sigue siendo el único dueño del respaldo y de los reintentos ante
+  fallos del proveedor (§2). Instructor envuelve esos fallos en su propia
+  excepción y el wrapper los desenvuelve, para que el endpoint siga
+  distinguiendo 504 de 502.
+- **Validaciones que re-preguntan:** rangos con mínimo y tope (entre 1 y 8 fases,
+  hasta 52 semanas y 1.000.000 EUR por fase, entre otros), nombres de fase únicos,
+  y la coherencia del rechazo. Los IDs y `depende_de` desaparecieron con las
+  tareas.
+- **Rechazo («Fuera de alcance:»):** con confianza menor que 30, `summary` empieza
+  con ese prefijo y la estimación es una sola fase «Sin estimar» en cero. Le da
+  al modelo una salida estructurada para una descripción que no alcanza, en vez
+  de inventar números. Es un 200 con el evento `estimacion_fuera_de_alcance`.
+  El prompt toma el umbral, el prefijo y el nombre de la fase de las constantes
+  del schema, así que no pueden discrepar.
+- **Tomado de `session_4_live/estimator`:** el resumen general y por fase, la
+  confianza global con el rechazo, los topes, el bloque `<totals>` del prompt
+  (decidir las fases, sumar y comprobar) y `cached` en la respuesta. **No
+  tomado:** Instructor sobre `litellm.completion` (se saltea el Router y pierde
+  el respaldo), `MODEL_COSTS` (§8), `max_retries=6`, re-preguntar por el total,
+  ejemplos en Markdown dentro de un prompt que pide JSON, y la duración total
+  como suma obligatoria de las fases.
+- **La decisión que quedaba abierta (el total frente a la suma):** se **acepta y
+  se avisa**. Un total que no cuadra no re-pregunta: la estimación se devuelve
+  tal cual, con el aviso en `warnings` y el evento `totales_no_cuadran`. Se
+  descartó re-preguntar (paga una llamada completa para corregir un número que
+  el usuario ve) y recalcular en código (revertiría §3.4).
+- **Coste:** cada intento se paga, y el coste y los tokens suman todos los
+  intentos; un error por intentos agotados lleva al log el coste de los
+  fallidos.
+- **Convivencia:** `/estimate` (texto, `v1`/`v2`) no cambió. Cada versión
+  declara su tipo de salida en `examples.yaml` (`output`), y cada endpoint
+  acepta solo las de su tipo.
 
-- La forma tiene que admitir el desglose que el prompt de `session_4/estimator`
-  produce: fases con duración y coste, equipo, supuestos y riesgos.
-- `total_horas` y `duracion_semanas` los **emite el modelo**, y el sistema no los
-  recalcula. Es el cambio de alcance que se decidió después de implementar
-  lo contrario.
-- Las validaciones que hacen falta ya se conocen por haber estado escritas:
-  `horas` y `cantidad` con `gt=0`, IDs únicos, `depende_de` sin huérfanas ni ciclos.
-  Esas tres se implementan en WU8, no antes.
-
-Lo que **no** se decide ahora: si el total se valida contra la suma de las tareas, si
-se acepta y se loguea la discrepancia, o si se re-pregunta al modelo. Esa decisión
-depende de lo que WU4 muestre sobre la calidad de las estimaciones que produce el
-prompt, y tomarla ahora sería fijarla sin evidencia.
+**Lo que queda de WU8:** el streaming con `ijson` y los eventos por fase del §4.
 
 ### 3.4 El exchange de alcance, y por qué está documentado
 
@@ -295,7 +324,7 @@ hereda un esqueleto probado.** `lidr_3` son 4606 líneas de Python. De ellas,
 | De `lidr_3` | Líneas | Veredicto |
 |---|---|---|
 | `app/config.py` | 156 | Casi entero. Se van `llm_provider` y `llm_fallback`; la filosofía queda intacta |
-| `app/main.py` | 130 | Casi entero: `create_app()`, lifespan, `_completar_schema_openapi()` |
+| `app/main.py` | 130 | Casi entero: `create_app()`, lifespan, `_complete_openapi_schema()` |
 | `app/cache.py` | 75 | El plomaje Redis y el TTL. Se reemplaza el keying exacto por semántico |
 | `app/tracing.py` | 33 | Entero |
 | `.env.example`, `pyproject.toml` | ~95 | Convenciones |
@@ -318,7 +347,7 @@ problemas invisibles al leer el código:
   en el punto de uso. Si la validación ocurre al importar, el proceso muere
   antes de que exista la aplicación: no hay `/health`, no hay nada que le diga
   al orquestador qué falta. *Un health check tiene que sobrevivir a la avería
-  que diagnostica.* Además `aplicar_defaults` normaliza un `.env` copiado del
+  que diagnostica.* Además `apply_defaults` normaliza un `.env` copiado del
   `.env.example` sin romper, mientras que un `LOG_LEVEL` inválido sí falla al
   arrancar.
 - **`tracing.py`** evita que un logger module-level se congele en su primer uso.
@@ -351,10 +380,10 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU2**~~ | Contrato de entrada: `EstimationRequest`/`EstimationResponse` en `app/schemas/estimation.py`, límites en dos capas (§3.1). 31 tests. **Cerrado** | Resuelto |
 | ~~**WU3**~~ | ~~Dominio con los totales calculados en código~~ **Revertido**: el modelo calcula. `app/domain/` borrado. Ver §3.4 | — |
 | ~~**WU4**~~ | `app/prompts/estimation/v1/{system.j2,user.j2,examples.yaml}` + `app/prompts/loader.py`. `render_estimation_prompt(request, version="v1")`. Ejemplos como datos, maquetados por `output_format`; roles, tarifas y redondeo en el YAML. 19 tests. **Cerrado** | Resuelto |
-| ~~**WU5**~~ | Gateway async: `Router` con primario y respaldo, claves por proveedor, coste con `completion_cost()`, provider vía `_hidden_params["model_id"]`. Respaldo opcional: sin su clave el servicio sigue con el primario y avisa al usuario (`avisos` en la respuesta y en `/health`). Caché exact-match fail soft sobre un único cliente de Redis. Errores 503 (falta la clave del primario), 502 y 504 con mensaje limpio. Trazabilidad con `estimacion_completada` / `estimacion_fallida`; los logs de LiteLLM quedan en `WARNING` con el formato de structlog, sin prompt ni claves. Devuelve `text: str` sin parsear. 61 tests (wrapper, caché, endpoint, logs), independientes del `.env` y del proveedor primario. **Cerrado** | Resuelto |
+| ~~**WU5**~~ | Gateway async: `Router` con primario y respaldo, claves por proveedor, coste con `completion_cost()`, provider vía `_hidden_params["model_id"]`. Respaldo opcional: sin su clave el servicio sigue con el primario y avisa al usuario (`warnings` en la respuesta y en `/health`). Caché exact-match fail soft sobre un único cliente de Redis. Errores 503 (falta la clave del primario), 502 y 504 con mensaje limpio. Trazabilidad con `estimacion_completada` / `estimacion_fallida`; los logs de LiteLLM quedan en `WARNING` con el formato de structlog, sin prompt ni claves. Devuelve `text: str` sin parsear. 61 tests (wrapper, caché, endpoint, logs), independientes del `.env` y del proveedor primario. **Cerrado** | Resuelto |
 | ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. Validación de longitud en el formulario sin `max_chars` (Streamlit descartaba entero un pegado de más de 2000 caracteres). 15 tests con transporte mockeado. **Cerrado y probado contra la API real** el 3 de octubre de 2026, con todo en Docker: estimación con OpenAI, caché en Redis (8,3 s → 0,5 ms en la repetición), trazabilidad completa y prompt `v2`. Ver §3.4 para lo que mostró la salida del modelo | Resuelto |
-| ~~**WU7**~~ | Slice vertical end-to-end con `mock_response`: `test/test_e2e.py` recorre formulario de Streamlit → API (lifespan, caché) → prompt `v2` → Router de LiteLLM → caché → formulario, con solo el proveedor y Redis simulados. El armado del cuerpo del formulario pasa a `_armar_payload()` para que el test use el mismo que la interfaz. 11 tests. **Cerrado** | Resuelto |
-| **WU8** | Structured output + `ijson` + eventos `tarea` | **Alto** — depende de WU0 |
+| ~~**WU7**~~ | Slice vertical end-to-end con `mock_response`: `test/test_e2e.py` recorre formulario de Streamlit → API (lifespan, caché) → prompt `v2` → Router de LiteLLM → caché → formulario, con solo el proveedor y Redis simulados. El armado del cuerpo del formulario pasa a `_build_payload()` para que el test use el mismo que la interfaz. 11 tests. **Cerrado** | Resuelto |
+| **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
 | **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
 | **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
@@ -523,9 +552,10 @@ JSON sin verificar. Es la política, no una preferencia.
 | Riesgo | Impacto | Mitigación |
 |--------|---------|------------|
 | `response_format` + `stream` no soportado por el provider | Rompe la capa 3 | WU0 lo mide antes de WU8 |
-| El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | Validación cruzada de referencias en WU8 |
+| El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | **No aplica**: el contrato de WU8 es por fases, sin dependencias (§3.3) |
 | `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU9 |
-| El total no cuadra con la suma de las fases | Ya ocurrió en la prueba real (29.850 € frente a 29.750 €). Hoy llega así al usuario | `model_validator` en WU8 (§3.4) |
+| El total no cuadra con la suma de las fases | Ya ocurrió en la prueba real (29.850 € frente a 29.750 €). En `/estimate` llega así al usuario | **Mitigado en `/estimate/structured`**: se detecta y llega como aviso (§3.3). En `/estimate` sigue sin detectarse: el texto no se parsea |
+| La salida estructurada no cumple el schema en ningún intento | 502 con `STRUCTURED_MAX_RETRIES + 1` llamadas pagadas | El coste de los intentos queda en el log (`estimacion_fallida`) |
 | El modelo copia etiquetas del prompt (`</estimation>`) | Texto sucio para el usuario | **Mitigado**: el endpoint las quita (§3.4) |
 | Caché semántico sirve una estimación de otro dominio | Resultado plausible pero fuera de tema | Namespace por `prompt_version` + umbral alto, WU10 |
 | Deriva de precios del modelo | Coste reportado ≠ coste real | `completion_cost()` se recalcula, no se cachea el precio |

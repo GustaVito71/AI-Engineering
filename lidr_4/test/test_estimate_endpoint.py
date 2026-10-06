@@ -20,7 +20,7 @@ from structlog.testing import capture_logs
 from app.config import get_settings
 from app.dependencies import get_llm_wrapper
 from app.main import create_app
-from app.routers.estimations import MENSAJE_FALLO_PROVEEDOR, MENSAJE_TIMEOUT
+from app.routers.estimations import PROVIDER_FAILURE_MESSAGE, TIMEOUT_MESSAGE
 from app.services.llm_wrapper import LLMCallResult
 
 BODY = {
@@ -55,11 +55,11 @@ class _WrapperFalso:
     def __init__(
         self,
         error: Exception | None = None,
-        avisos: tuple[str, ...] = (),
+        warnings: tuple[str, ...] = (),
         contenido: str = "| phase | duration_weeks | cost_eur | confidence_pct |",
     ) -> None:
         self._error = error
-        self.avisos = avisos
+        self.warnings = warnings
         self._contenido = contenido
         self.llamadas: list[dict] = []
 
@@ -113,7 +113,7 @@ def test_returns_200_with_text_and_prompt_version(cliente) -> None:
     assert r.json() == {
         "text": "| phase | duration_weeks | cost_eur | confidence_pct |",
         "prompt_version": "v2",
-        "avisos": [],
+        "warnings": [],
     }
 
 
@@ -205,7 +205,7 @@ def test_versiones_disponibles_se_ordenan_por_numero(tmp_path, monkeypatch) -> N
         (tmp_path / "estimation" / nombre / "system.j2").write_text("x", encoding="utf-8")
     monkeypatch.setattr(loader, "_BASE_DIR", tmp_path)
 
-    assert loader.versiones_disponibles() == ["v1", "v2", "v10"]
+    assert loader.available_versions() == ["v1", "v2", "v10"]
 
 
 # --- Falta configuración: 503 ---------------------------------------------------
@@ -251,15 +251,15 @@ def test_missing_fallback_key_still_estimates_and_warns(cliente, monkeypatch, mo
     assert r.status_code == 200
     cuerpo = r.json()
     assert cuerpo["text"] == "estimación"
-    [aviso] = cuerpo["avisos"]
+    [aviso] = cuerpo["warnings"]
     assert var_respaldo in aviso
     assert "sk-primario-secreta" not in r.text
 
 
 def test_avisos_reach_the_response(cliente) -> None:
-    with _con_wrapper(cliente, _WrapperFalso(avisos=("aviso de prueba",))) as c:
+    with _con_wrapper(cliente, _WrapperFalso(warnings=("aviso de prueba",))) as c:
         r = c.post("/api/v1/estimate", json=BODY)
-    assert r.json()["avisos"] == ["aviso de prueba"]
+    assert r.json()["warnings"] == ["aviso de prueba"]
 
 
 def test_health_reports_missing_fallback(cliente, modelos) -> None:
@@ -268,7 +268,7 @@ def test_health_reports_missing_fallback(cliente, modelos) -> None:
         h = c.get("/health").json()
     assert h["llm_configured"] is True
     assert h["fallback_configured"] is False
-    [aviso] = h["avisos"]
+    [aviso] = h["warnings"]
     assert var_respaldo in aviso
 
 
@@ -283,7 +283,7 @@ def test_health_without_notices_when_both_keys_are_set(cliente, modelos) -> None
         h = c.get("/health").json()
     assert h["llm_configured"] is True
     assert h["fallback_configured"] is True
-    assert h["avisos"] == []
+    assert h["warnings"] == []
 
 
 def test_health_still_answers_without_keys(cliente) -> None:
@@ -300,10 +300,10 @@ def test_health_still_answers_without_keys(cliente) -> None:
 @pytest.mark.parametrize(
     ("crear_error", "codigo", "mensaje"),
     [
-        (_error_de_conexion, 502, MENSAJE_FALLO_PROVEEDOR),
-        (_error_de_estado, 502, MENSAJE_FALLO_PROVEEDOR),
-        (lambda: RuntimeError(DETALLE_INTERNO), 502, MENSAJE_FALLO_PROVEEDOR),
-        (_timeout, 504, MENSAJE_TIMEOUT),
+        (_error_de_conexion, 502, PROVIDER_FAILURE_MESSAGE),
+        (_error_de_estado, 502, PROVIDER_FAILURE_MESSAGE),
+        (lambda: RuntimeError(DETALLE_INTERNO), 502, PROVIDER_FAILURE_MESSAGE),
+        (_timeout, 504, TIMEOUT_MESSAGE),
     ],
     ids=["conexion", "rate-limit", "inesperado", "timeout"],
 )

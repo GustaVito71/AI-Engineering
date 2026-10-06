@@ -27,7 +27,7 @@ def entorno_aislado(monkeypatch) -> None:
     """Settings no lee el `.env` ni las variables de configuración del entorno.
 
     Sin esto, los tests heredan la configuración de quien los corre: con otro
-    PRIMARY_MODEL, otras claves o otro DESCRIPCION_MAX_CHARS en su `.env`,
+    PRIMARY_MODEL, otras claves o otro DESCRIPTION_MAX_CHARS en su `.env`,
     fallan tests que en otra máquina pasan.
 
     - `env_file=None` deja de leer el `.env` del proyecto (se restaura al
@@ -36,9 +36,13 @@ def entorno_aislado(monkeypatch) -> None:
       Settings, por si el shell o el CI exportan alguna.
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)
-    for campo in Settings.model_fields:
-        monkeypatch.delenv(campo.upper(), raising=False)
-        monkeypatch.delenv(campo, raising=False)
+    for campo, info in Settings.model_fields.items():
+        # Los alias incluyen nombres anteriores que se siguen leyendo
+        # (DESCRIPCION_MAX_CHARS): también se quitan.
+        alias = getattr(info.validation_alias, "choices", [])
+        for nombre in [campo, *alias]:
+            monkeypatch.delenv(nombre.upper(), raising=False)
+            monkeypatch.delenv(nombre, raising=False)
 
 
 # (modelo, variable de su API key, proveedor)

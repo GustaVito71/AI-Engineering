@@ -18,8 +18,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import (
-    CONTRATO_MAX_CHARS,
-    CONTRATO_MIN_CHARS,
+    CONTRACT_MAX_CHARS,
+    CONTRACT_MIN_CHARS,
+    Settings,
 )
 from app.schemas.estimation import (
     EstimationRequest,
@@ -34,8 +35,8 @@ PETICION_VALIDA = {
 }
 
 # "x" * 20: 20 caracteres exactos, el mínimo del contrato.
-DESC_MINIMA = "x" * CONTRATO_MIN_CHARS
-DESC_MAXIMA = "x" * CONTRATO_MAX_CHARS
+DESC_MINIMA = "x" * CONTRACT_MIN_CHARS
+DESC_MAXIMA = "x" * CONTRACT_MAX_CHARS
 
 
 def peticion(**cambios) -> dict:
@@ -58,17 +59,17 @@ def test_contrato_y_constantes_no_se_desincronizan():
     si alguien cambia uno y no el otro, la app valida 50 mientras Swagger dice
     20, que es el bug exacto que tenían los defaults de WU1."""
     description = EstimationRequest.model_json_schema()["properties"]["description"]
-    assert description["minLength"] == CONTRATO_MIN_CHARS
-    assert description["maxLength"] == CONTRATO_MAX_CHARS
+    assert description["minLength"] == CONTRACT_MIN_CHARS
+    assert description["maxLength"] == CONTRACT_MAX_CHARS
 
 
 @pytest.mark.parametrize(
     ("longitud", "acepta"),
     [
-        (CONTRATO_MIN_CHARS - 1, False),
-        (CONTRATO_MIN_CHARS, True),
-        (CONTRATO_MAX_CHARS, True),
-        (CONTRATO_MAX_CHARS + 1, False),
+        (CONTRACT_MIN_CHARS - 1, False),
+        (CONTRACT_MIN_CHARS, True),
+        (CONTRACT_MAX_CHARS, True),
+        (CONTRACT_MAX_CHARS + 1, False),
     ],
 )
 def test_limites_del_contrato_en_los_bordes(longitud, acepta):
@@ -143,8 +144,8 @@ def test_la_respuesta_expone_texto_y_version_de_prompt():
 def test_el_techo_por_defecto_es_el_contrato(settings_predeterminada):
     """El default no es un valor más permisivo a propósito. Con 50/5000 el
     `min_length=20` del schema no se cumpliría nunca y nadie se enteraría."""
-    assert settings_predeterminada.descripcion_min_chars == CONTRATO_MIN_CHARS
-    assert settings_predeterminada.descripcion_max_chars == CONTRATO_MAX_CHARS
+    assert settings_predeterminada.description_min_chars == CONTRACT_MIN_CHARS
+    assert settings_predeterminada.description_max_chars == CONTRACT_MAX_CHARS
 
 
 @pytest.mark.parametrize(
@@ -159,17 +160,17 @@ def test_el_techo_por_defecto_es_el_contrato(settings_predeterminada):
 def test_aceptar_techos_que_estrechan_el_rango(construir_settings, min_chars, max_chars, motivo):
     """Estrechar es la razón de ser del techo: bajar el máximo sin redeploy.
     Todas estas configs arrancan."""
-    settings = construir_settings(descripcion_min_chars=min_chars, descripcion_max_chars=max_chars)
-    assert settings.descripcion_min_chars == min_chars, motivo
-    assert settings.descripcion_max_chars == max_chars, motivo
+    settings = construir_settings(description_min_chars=min_chars, description_max_chars=max_chars)
+    assert settings.description_min_chars == min_chars, motivo
+    assert settings.description_max_chars == max_chars, motivo
 
 
 @pytest.mark.parametrize(
     ("min_chars", "max_chars", "variable"),
     [
-        (CONTRATO_MIN_CHARS - 1, 2000, "DESCRIPCION_MIN_CHARS"),
-        (20, CONTRATO_MAX_CHARS + 1, "DESCRIPCION_MAX_CHARS"),
-        (10, 9999, "DESCRIPCION_MIN_CHARS"),
+        (CONTRACT_MIN_CHARS - 1, 2000, "DESCRIPTION_MIN_CHARS"),
+        (20, CONTRACT_MAX_CHARS + 1, "DESCRIPTION_MAX_CHARS"),
+        (10, 9999, "DESCRIPTION_MIN_CHARS"),
     ],
 )
 def test_rechazar_techos_mas_laxos_que_el_contrato(
@@ -182,7 +183,7 @@ def test_rechazar_techos_mas_laxos_que_el_contrato(
     Falla al arrancar, no en runtime: si pasara, el síntoma sería un 422
     inexplicable en producción."""
     with pytest.raises(ValidationError) as error:
-        construir_settings(descripcion_min_chars=min_chars, descripcion_max_chars=max_chars)
+        construir_settings(description_min_chars=min_chars, description_max_chars=max_chars)
     assert variable in str(error.value)
 
 
@@ -190,7 +191,7 @@ def test_rechazar_un_rango_vacio(construir_settings):
     """min > max deja el campo sin ningún valor válido. Es un `.env` mal
     puesto, no un caso degenerado aceptable."""
     with pytest.raises(ValidationError, match="ningún texto sería aceptado"):
-        construir_settings(descripcion_min_chars=500, descripcion_max_chars=100)
+        construir_settings(description_min_chars=500, description_max_chars=100)
 
 
 def test_el_techo_estrechado_rechaza_lo_que_el_contrato_aceptaba(monkeypatch):
@@ -203,7 +204,7 @@ def test_el_techo_estrechado_rechaza_lo_que_el_contrato_aceptaba(monkeypatch):
     No hace falta vaciar la caché a mano: `limpiar_cache_settings` es autouse y
     corre antes que el cuerpo del test, así que el setenv de acá es lo primero
     que ve la lectura de Settings."""
-    monkeypatch.setenv("DESCRIPCION_MAX_CHARS", "500")
+    monkeypatch.setenv("DESCRIPTION_MAX_CHARS", "500")
 
     # 600 caracteres: dentro de 20/2000, fuera del techo de 500.
     with pytest.raises(ValidationError, match="500"):
@@ -217,7 +218,7 @@ def test_el_mensaje_del_techo_diga_la_variable_que_hay_que_cambiar(monkeypatch):
     """El 422 tiene que ser accionable: un cliente que recibe "500 caracteres"
     sin más no puede saber que hay un `.env` detrás. El número recibido va en el
     mensaje a propósito, para que se vea la diferencia."""
-    monkeypatch.setenv("DESCRIPCION_MAX_CHARS", "500")
+    monkeypatch.setenv("DESCRIPTION_MAX_CHARS", "500")
 
     with pytest.raises(ValidationError) as error:
         construir("x" * 600)
@@ -229,8 +230,8 @@ def test_el_mensaje_del_techo_diga_la_variable_que_hay_que_cambiar(monkeypatch):
 def test_un_techo_igual_al_contrato_no_cambia_nada(monkeypatch, descripcion):
     """Default = contrato. En ese punto el validador de Settings no puede
     disparar: es una no-op, que es exactamente lo que se busca."""
-    monkeypatch.setenv("DESCRIPCION_MIN_CHARS", str(CONTRATO_MIN_CHARS))
-    monkeypatch.setenv("DESCRIPCION_MAX_CHARS", str(CONTRATO_MAX_CHARS))
+    monkeypatch.setenv("DESCRIPTION_MIN_CHARS", str(CONTRACT_MIN_CHARS))
+    monkeypatch.setenv("DESCRIPTION_MAX_CHARS", str(CONTRACT_MAX_CHARS))
     assert construir(descripcion) is not None
 
 
@@ -238,7 +239,7 @@ def test_un_techo_igual_al_contrato_no_cambia_nada(monkeypatch, descripcion):
 #
 # No es parte del contrato HTTP, pero el `Literal` lo introduction una
 # regresión real que casi se cuela: `Literal` rechaza `""` antes de que
-# `aplicar_defaults` pueda convertirlo, así que un `LOG_LEVEL=` vacío pasaba a
+# `apply_defaults` pueda convertirlo, así que un `LOG_LEVEL=` vacío pasaba a
 # romper el arranque. El principio 2 del docstring de config.py dice que cadena
 # vacía = "no configurado". Estos tests lo fijan.
 
@@ -276,3 +277,16 @@ def test_el_error_de_log_level_lista_los_validos(construir_settings):
     mensaje = str(error.value)
     for nivel in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
         assert nivel in mensaje
+
+
+def test_los_nombres_anteriores_del_techo_se_siguen_leyendo(monkeypatch) -> None:
+    """DESCRIPCION_* era el nombre de estas variables: un .env anterior no debe
+    volver en silencio al default. Si están los dos nombres, manda el nuevo."""
+    monkeypatch.setenv("DESCRIPCION_MAX_CHARS", "1500")
+    monkeypatch.setenv("DESCRIPCION_MIN_CHARS", "30")
+    settings = Settings(_env_file=None)
+    assert settings.description_max_chars == 1500
+    assert settings.description_min_chars == 30
+
+    monkeypatch.setenv("DESCRIPTION_MAX_CHARS", "1800")
+    assert Settings(_env_file=None).description_max_chars == 1800

@@ -1,6 +1,6 @@
 """Emisión de eventos de trazabilidad (punto único de creación del logger).
 
-`emitir` usa `structlog.get_logger` FRESCO por evento, NO un logger
+`emit` usa `structlog.get_logger` FRESCO por evento, NO un logger
 module-level congelado. Por qué: con `cache_logger_on_first_use` (que la
 app configura), un logger module-level se congela en su PRIMER uso con el
 backend vigente en ese instante. Si un test toca el módulo antes de que
@@ -22,12 +22,12 @@ from __future__ import annotations
 import structlog
 
 
-def emitir(
-    nombre_logger: str,
-    evento: str,
+def emit(
+    logger_name: str,
+    event: str,
     *,
-    nivel: str = "info",
-    **campos: object,
+    level: str = "info",
+    **fields: object,
 ) -> None:
     """Registra un evento de trazabilidad con la configuración vigente."""
-    getattr(structlog.get_logger(nombre_logger), nivel)(evento, **campos)
+    getattr(structlog.get_logger(logger_name), level)(event, **fields)

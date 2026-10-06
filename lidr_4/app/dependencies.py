@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.config import get_settings
-from app.services.cache import crear_estimation_cache
+from app.services.cache import create_estimation_cache
 from app.services.llm_wrapper import LLMWrapper
 
 
@@ -24,7 +24,7 @@ def get_llm_wrapper(request: Request) -> LLMWrapper:
     wrapper = getattr(state, "llm_wrapper", None)
     if wrapper is None:
         settings = get_settings()
-        cache = getattr(state, "estimation_cache", None) or crear_estimation_cache(
+        cache = getattr(state, "estimation_cache", None) or create_estimation_cache(
             None, settings.cache_ttl
         )
         wrapper = LLMWrapper(settings=settings, cache=cache)

@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.main import LOGGERS_DE_LITELLM, configure_logging, create_app
+from app.main import LITELLM_LOGGERS, configure_logging, create_app
 
 MARCADOR = "MARCADOR-DESCRIPCION-DEL-CLIENTE"
 CLAVE_FALSA = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -31,7 +31,7 @@ BODY = {
 @pytest.fixture
 def restaurar_logging():
     """configure_logging toca el logging global: se deja como estaba."""
-    loggers = [logging.getLogger(), *(logging.getLogger(n) for n in LOGGERS_DE_LITELLM)]
+    loggers = [logging.getLogger(), *(logging.getLogger(n) for n in LITELLM_LOGGERS)]
     estado = [(lg, lg.level, lg.handlers[:], lg.filters[:]) for lg in loggers]
     yield
     for logger, nivel, handlers, filtros in estado:
@@ -40,7 +40,7 @@ def restaurar_logging():
         logger.filters = filtros
 
 
-@pytest.mark.parametrize("nombre", LOGGERS_DE_LITELLM)
+@pytest.mark.parametrize("nombre", LITELLM_LOGGERS)
 def test_litellm_loggers_are_pinned_to_warning(restaurar_logging, nombre) -> None:
     configure_logging("DEBUG")
     assert logging.getLogger(nombre).getEffectiveLevel() == logging.WARNING
@@ -76,7 +76,7 @@ def test_litellm_warning_is_written_once_in_structlog_format(restaurar_logging, 
     # Sin handler propio: solo escribe el de la raíz. Se comprueba aparte porque
     # con LITELLM_LOG=ERROR o más alto el handler de LiteLLM calla las
     # advertencias y la salida no mostraría el duplicado.
-    for nombre in LOGGERS_DE_LITELLM:
+    for nombre in LITELLM_LOGGERS:
         assert logging.getLogger(nombre).handlers == []
     logging.getLogger("LiteLLM").warning("AVISO-DE-PRUEBA")
 
@@ -86,7 +86,7 @@ def test_litellm_warning_is_written_once_in_structlog_format(restaurar_logging, 
     assert "LiteLLM:WARNING" not in todo  # el formato propio de LiteLLM
 
 
-@pytest.mark.parametrize("nombre", [*LOGGERS_DE_LITELLM, "LiteLLM Proxy.stdout"])
+@pytest.mark.parametrize("nombre", [*LITELLM_LOGGERS, "LiteLLM Proxy.stdout"])
 def test_litellm_messages_still_hide_api_keys(restaurar_logging, capfd, nombre) -> None:
     """Sin el handler de LiteLLM, sus filtros siguen borrando las claves. Se
     configura dos veces, como cuando el lifespan corre más de una vez."""

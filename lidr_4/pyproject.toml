@@ -8,7 +8,7 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
-    "pydantic-settings>=2.4",    
+    "pydantic-settings>=2.4",
     "python-dotenv>=1.0",
     "structlog>=24.1",
     # Router, retries, fallbacks, structured output y tracking de coste.
@@ -25,6 +25,10 @@ dependencies = [
     "pyyaml>=6.0",
     # Parseo incremental del JSON que llega por streaming.
     "ijson>=3.3",
+    # Salida estructurada (WU8): valida la respuesta contra el schema de Pydantic
+    # y re-pregunta al modelo con el error cuando no cumple. Va sobre el Router
+    # de LiteLLM, no en lugar de él.
+    "instructor>=1.17",
 ]
 
 [dependency-groups]

@@ -23,18 +23,18 @@ import structlog
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .cache import cerrar_cliente_cache, crear_cliente_cache
+from .cache import close_cache_client, create_cache_client
 from .config import LLMConfigurationError, Settings, get_settings
-from .prompts.loader import versiones_disponibles
+from .prompts.loader import OUTPUT_STRUCTURED, available_versions
 from .routers.estimations import router as estimations_router
-from .services.cache import crear_estimation_cache
-from .services.llm_wrapper import aviso_sin_respaldo
+from .services.cache import create_estimation_cache
+from .services.llm_wrapper import fallback_warning
 
 # Loggers propios de LiteLLM (los nombres llevan mayúsculas y espacios). En DEBUG
 # escriben los parámetros completos de cada llamada, incluidos los mensajes: el
 # prompt del sistema y la descripción del cliente. Se fijan en WARNING igual que
 # los de transporte HTTP, y eso también pisa lo que pida LITELLM_LOG.
-LOGGERS_DE_LITELLM = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
+LITELLM_LOGGERS = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
 
 
 def configure_logging(level: str = "INFO") -> None:
@@ -92,14 +92,20 @@ def configure_logging(level: str = "INFO") -> None:
         "openai",
         "aiohttp",
         "h11",
-        *LOGGERS_DE_LITELLM,
+        *LITELLM_LOGGERS,
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    _unificar_loggers_de_litellm()
+    # --- Structured response ----------------------------------------------------
+    # Instructor escribe en DEBUG cada error de validación, con fragmentos de la
+    # respuesta del modelo. Mismo criterio que el resto de terceros: sus errores
+    # (ERROR) siguen pasando, el volcado detallado no.
+    logging.getLogger("instructor").setLevel(logging.WARNING)
+
+    _unify_litellm_loggers()
 
 
-def _unificar_loggers_de_litellm() -> None:
+def _unify_litellm_loggers() -> None:
     """Que los mensajes de LiteLLM salgan una sola vez, con el formato de structlog.
 
     LiteLLM instala su propio handler en sus loggers y además deja que los
@@ -115,13 +121,15 @@ def _unificar_loggers_de_litellm() -> None:
 
     Se puede llamar más de una vez: la segunda ya no encuentra handlers.
     """
-    raices = [logging.getLogger(nombre) for nombre in LOGGERS_DE_LITELLM]
-    filtros = [f for logger in raices for handler in logger.handlers for f in handler.filters]
-    for nombre in list(logging.root.manager.loggerDict):
-        if any(nombre == r or nombre.startswith(f"{r}.") for r in LOGGERS_DE_LITELLM):
-            for filtro in filtros:
-                logging.getLogger(nombre).addFilter(filtro)  # addFilter no duplica
-    for logger in raices:
+    root_loggers = [logging.getLogger(logger_name) for logger_name in LITELLM_LOGGERS]
+    log_filters = [
+        f for logger in root_loggers for handler in logger.handlers for f in handler.filters
+    ]
+    for logger_name in list(logging.root.manager.loggerDict):
+        if any(logger_name == r or logger_name.startswith(f"{r}.") for r in LITELLM_LOGGERS):
+            for log_filter in log_filters:
+                logging.getLogger(logger_name).addFilter(log_filter)  # addFilter no duplica
+    for logger in root_loggers:
         logger.handlers.clear()
 
 
@@ -133,13 +141,13 @@ async def lifespan(app: FastAPI):
     # él y el wrapper LLM la toma de app.state (ver app/dependencies.py). Se
     # cierra en el `finally` para que el pool de conexiones no quede abierto si
     # el arranque falla a mitad o si hay un shutdown abrupto.
-    cliente = await crear_cliente_cache(settings)
-    app.state.cache_client = cliente
-    app.state.estimation_cache = crear_estimation_cache(cliente, settings.cache_ttl)
+    redis_client = await create_cache_client(settings)
+    app.state.cache_client = redis_client
+    app.state.estimation_cache = create_estimation_cache(redis_client, settings.cache_ttl)
     try:
         yield
     finally:
-        await cerrar_cliente_cache(cliente)
+        await close_cache_client(redis_client)
 
 
 def create_app() -> FastAPI:
@@ -156,7 +164,7 @@ def create_app() -> FastAPI:
     app.include_router(estimations_router)
 
     @app.exception_handler(LLMConfigurationError)
-    async def llm_no_configurado(_request: Request, exc: LLMConfigurationError) -> JSONResponse:
+    async def llm_not_configured(_request: Request, exc: LLMConfigurationError) -> JSONResponse:
         # Falta configuración local (una API key), no falló el proveedor: 503
         # "servicio no disponible" con el nombre de la variable, en vez de un
         # 500 genérico que obliga a leer el traceback. El mensaje lo arma el
@@ -173,29 +181,36 @@ def create_app() -> FastAPI:
         # `llm_configured` es lo que el orquestador mira para decidir si el
         # arranque sin secret es aceptable o no. Mira solo el primario: sin la
         # clave del respaldo el servicio funciona igual, y eso lo informan
-        # `fallback_configured` y `avisos`, con el mismo texto que recibe el
+        # `fallback_configured` y `warnings`, con el mismo texto que recibe el
         # usuario en cada estimación.
-        aviso = aviso_sin_respaldo(settings)
+        warning = fallback_warning(settings)
         return {
             "status": "ok",
             "env": settings.app_env,
             "llm_configured": settings.is_configured,
-            "fallback_configured": aviso is None,
+            "fallback_configured": warning is None,
             "primary_model": settings.primary_model,
             "fallback_model": settings.fallback_model,
             "prompt_version": settings.prompt_version,
             # Las que acepta `?prompt_version=` en el endpoint: el frontend arma
             # su selector con esta lista en vez de tener una escrita a mano.
-            "prompt_versions": versiones_disponibles(),
+            "prompt_versions": available_versions(),
             "cache_enabled": bool(settings.redis_url),
-            "avisos": [aviso] if aviso else [],
+            "warnings": [warning] if warning else [],
+            # --- Structured response ----------------------------------------------------
+            # Lo mismo para POST /api/v1/estimate/structured: su versión por
+            # defecto y las que acepta. `prompt_versions` sigue listando solo las
+            # de texto libre, para que un cliente anterior no ofrezca una versión
+            # que /estimate rechaza.
+            "structured_prompt_version": settings.structured_prompt_version,
+            "structured_prompt_versions": available_versions(OUTPUT_STRUCTURED),
         }
 
-    _completar_schema_openapi(app)
+    _complete_openapi_schema(app)
     return app
 
 
-def _completar_schema_openapi(app: FastAPI) -> None:
+def _complete_openapi_schema(app: FastAPI) -> None:
     """Swagger no puede quedar incompleto: el techo del operador se valida en
     runtime contra Settings (el `model_validator` de EstimationRequest), y
     Pydantic no puede volcar una validación que lee configuración a un JSON
@@ -207,9 +222,9 @@ def _completar_schema_openapi(app: FastAPI) -> None:
     desde .env.
 
     Se deriva de la instancia activa de Settings: si el operador cambia
-    DESCRIPCION_MAX_CHARS en .env, la documentación cambia con ella, y ambos
+    DESCRIPTION_MAX_CHARS en .env, la documentación cambia con ella, y ambos
     números ya fueron validados contra el contrato al arrancar
-    (Settings.validar_techo_descripcion), así que nunca prometen más de lo que
+    (Settings.validate_description_ceiling), así que nunca prometen más de lo que
     el servicio acepta.
 
     Solo se completa `description`: los otros tres campos del formulario son
@@ -218,8 +233,8 @@ def _completar_schema_openapi(app: FastAPI) -> None:
     settings = get_settings()
     schema = app.openapi()
     description = schema["components"]["schemas"]["EstimationRequest"]["properties"]["description"]
-    description["minLength"] = settings.descripcion_min_chars
-    description["maxLength"] = settings.descripcion_max_chars
+    description["minLength"] = settings.description_min_chars
+    description["maxLength"] = settings.description_max_chars
     app.openapi_schema = schema
 
 
