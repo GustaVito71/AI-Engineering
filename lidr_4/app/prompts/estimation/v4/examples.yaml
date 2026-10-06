@@ -1,0 +1,239 @@
+# Datos de ejemplo de la versión v4 del prompt: salida estructurada (JSON) con
+# la presentación que pidió el usuario (output_format) en el campo `rendered`.
+# Mismos datos que v3 (y que v2), así que la aritmética de los ejemplos es la
+# misma; el `rendered` de cada ejemplo lo arma examples.j2 con esos números.
+# Se guardan por versión para que los prompts publicados sean inmutables.
+# El loader lee este archivo: cambiar sus datos implica una versión nueva, no
+# una edición silenciosa.
+
+# Tipo de salida de esta versión. La acepta solo POST /api/v1/estimate/rendered.
+# Sin esta clave, una versión es de texto libre (v1, v2).
+output: rendered
+
+# Roles: única fuente de verdad para las tarifas Y para cómo se muestra cada rol.
+# - label: presentación, lo usan system.j2 (<scope>) y examples.j2 (equipo).
+# - plural: no lo usa v4, pero el loader lo exige en todo rol.
+# - eur_per_hour: lo usa la aritmética del loader.
+# El orden de este mapa es el orden en que aparecen los roles en <scope> y en el
+# resumen de equipo. Basta con agregar un rol acá: no hace falta tocar Python.
+rates:
+  developer:
+    label: Desarrollador
+    plural: Desarrolladores
+    eur_per_hour: 62.50
+  designer:
+    label: Diseñador
+    plural: Diseñadores
+    eur_per_hour: 50.00
+  pm:
+    label: PM
+    plural: PMs
+    eur_per_hour: 62.50
+  qa:
+    label: QA
+    plural: QAs
+    eur_per_hour: 62.50
+
+# Reglas de redondeo (se usan en <scope> y en la aritmética del loader).
+rounding:
+  hours_base: 5
+  cost_base: 50
+
+# Horas productivas por persona-semana (se usan en <scope> y en la aritmética del loader).
+productive_hours_per_week: 32
+
+# Ejemplos: cada uno tiene project_type, project_description, un resumen
+# (summary), la confianza global (confidence_pct) y fases con su resumen y la
+# composición del equipo.
+# Horas, costes, totales y dotación del equipo los CALCULA el loader.
+# Cómo se muestran (en JSON y en rendered) lo decide examples.j2.
+examples:
+  - project_type: web_saas
+    project_description: >-
+      Un pequeño SaaS B2B para gestionar el préstamo de equipos a empleados
+      (portátiles, auriculares). Una instancia por cliente, acceso por roles
+      para RR. HH. e IT, registro de auditoría de cada préstamo y resumen
+      semanal por correo. Sin app móvil.
+    summary: SaaS B2B de préstamo de equipos con instancia por cliente, acceso por roles, auditoría y resumen semanal. El grueso del esfuerzo está en la implementación; el resto de las fases es acotado porque no hay app móvil.
+    confidence_pct: 75
+    phases:
+      - phase: Descubrimiento
+        summary: Entrevistas con RR. HH. e IT, inventario de tipos de equipo y definición del flujo de préstamo y devolución.
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 85
+      - phase: Diseño
+        summary: Flujos de préstamo y devolución, permisos por rol y diseño de las pantallas de gestión y del resumen semanal.
+        duration_weeks: 1
+        team:
+          designer: 1
+          developer: 1
+        confidence_pct: 80
+      - phase: Implementación
+        summary: Instancia por cliente, control de acceso por roles, registro de auditoría de cada préstamo y envío del resumen semanal por correo.
+        duration_weeks: 5
+        team:
+          developer: 2
+        confidence_pct: 70
+      - phase: QA
+        summary: Pruebas funcionales de los flujos de préstamo, de los permisos por rol y del registro de auditoría.
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 75
+      - phase: Lanzamiento
+        summary: Despliegue de la primera instancia, carga inicial del inventario y acompañamiento de los primeros usuarios.
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_type: mobile_app
+    project_description: >-
+      App móvil nativa (iOS y Android) para una startup de comidas preparadas:
+      catálogo, suscripción semanal, pago con Stripe, notificaciones push y una
+      pantalla de seguimiento del envío conectada a una API de logística
+      existente.
+    summary: App nativa para iOS y Android con suscripción, pago con Stripe, push y seguimiento del envío. La integración con la API de logística existente es la principal fuente de incertidumbre.
+    confidence_pct: 70
+    phases:
+      - phase: Descubrimiento
+        summary: Definición del catálogo, del modelo de suscripción y de la integración con la API de logística existente.
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+          pm: 1
+        confidence_pct: 80
+      - phase: Diseño
+        summary: Diseño de las pantallas de catálogo, suscripción, pago y seguimiento del envío para iOS y Android.
+        duration_weeks: 3
+        team:
+          designer: 2
+          developer: 1
+        confidence_pct: 75
+      - phase: Implementación
+        summary: Desarrollo de las dos apps nativas, suscripción semanal, pago con Stripe, notificaciones push y seguimiento del envío.
+        duration_weeks: 9
+        team:
+          developer: 4
+        confidence_pct: 65
+      - phase: QA
+        summary: Pruebas en dispositivos iOS y Android, del pago con Stripe y de la integración con logística.
+        duration_weeks: 2
+        team:
+          qa: 2
+        confidence_pct: 70
+      - phase: Lanzamiento
+        summary: Publicación en App Store y Google Play y seguimiento de los primeros pedidos.
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_type: internal_tool
+    project_description: >-
+      Herramienta interna para centralizar los recursos de marketing de tres
+      marcas: búsqueda, etiquetado, acceso por roles para marketing y legales, y
+      un flujo de aprobación antes de que los recursos se publiquen.
+    summary: Herramienta interna para centralizar los recursos de tres marcas, con búsqueda, etiquetado, permisos y aprobación. Alcance claro y sin integraciones externas.
+    confidence_pct: 75
+    phases:
+      - phase: Descubrimiento
+        summary: Relevamiento de los recursos de las tres marcas, de las etiquetas y del circuito de aprobación con legales.
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 85
+      - phase: Diseño
+        summary: Diseño de la búsqueda, del etiquetado y del flujo de aprobación previo a la publicación.
+        duration_weeks: 2
+        team:
+          designer: 1
+          developer: 1
+        confidence_pct: 80
+      - phase: Implementación
+        summary: Repositorio centralizado, búsqueda y etiquetado, acceso por roles y flujo de aprobación.
+        duration_weeks: 6
+        team:
+          developer: 2
+        confidence_pct: 70
+      - phase: QA
+        summary: Pruebas de búsqueda, de permisos de marketing y legales y del flujo de aprobación.
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 75
+      - phase: Lanzamiento
+        summary: Migración inicial de los recursos de las tres marcas y capacitación de los equipos.
+        duration_weeks: 1
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+
+  - project_type: data_pipeline
+    project_description: >-
+      Pipeline de datos para ingerir, transformar y servir eventos analíticos de
+      varias fuentes SaaS (Salesforce, HubSpot, Stripe) en un data warehouse en
+      la nube (Snowflake). Incluye CDC, modelos dbt, controles de calidad de
+      datos y una capa de BI de autoservicio (Metabase).
+    summary: Pipeline de datos desde tres fuentes SaaS hacia Snowflake, con CDC, dbt, controles de calidad y BI de autoservicio. La calidad de los datos de origen puede alargar la implementación.
+    confidence_pct: 70
+    phases:
+      - phase: Descubrimiento
+        summary: Relevamiento de las fuentes (Salesforce, HubSpot, Stripe), de los volúmenes y de las métricas que se necesitan.
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 80
+      - phase: Diseño
+        summary: Diseño del modelo de datos en Snowflake, de la estrategia de CDC y de los modelos dbt.
+        duration_weeks: 2
+        team:
+          developer: 1
+          designer: 1
+        confidence_pct: 75
+      - phase: Implementación
+        summary: Ingesta con CDC, modelos dbt, controles de calidad de datos y tableros iniciales en Metabase.
+        duration_weeks: 8
+        team:
+          developer: 3
+        confidence_pct: 65
+      - phase: QA
+        summary: Validación de los datos contra las fuentes y pruebas de los controles de calidad.
+        duration_weeks: 1
+        team:
+          qa: 1
+        confidence_pct: 70
+      - phase: Lanzamiento
+        summary: Puesta en producción del pipeline, monitoreo inicial y entrega de la capa de BI.
+        duration_weeks: 1
+        team:
+          developer: 1
+        confidence_pct: 80
+
+  # Ejemplo de rechazo: la descripción no alcanza para estimar. Una sola fase
+  # "Sin estimar" sin equipo, así que el loader calcula todo en cero.
+  - project_type: web_saas
+    project_description: >-
+      Una plataforma tipo Uber pero para nuestro sector. Necesitamos algo
+      parecido, con buena experiencia de usuario.
+    summary: >-
+      Fuera de alcance: la descripción no dice qué sector es, quiénes son los
+      usuarios ni qué funciones hacen falta, así que no se puede dimensionar
+      ninguna fase. Hace falta, como mínimo, el sector, los tipos de usuario y
+      las funciones principales.
+    confidence_pct: 15
+    phases:
+      - phase: Sin estimar
+        summary: No se puede dimensionar sin más información sobre el alcance.
+        duration_weeks: 0
+        team: {}
+        confidence_pct: 0

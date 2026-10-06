@@ -1,0 +1,11 @@
+# Secretos: el .env se pasa en tiempo de ejecución (env_file), nunca a la imagen.
+.env
+
+.git
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+test/
+*.md
