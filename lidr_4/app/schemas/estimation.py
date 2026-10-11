@@ -13,11 +13,16 @@ Son dos capas de límites sobre `description`, y no es redundancia:
 Pydantic no puede volcar a un JSON Schema estático un `model_validator` que lee
 configuración, así que app.main._complete_openapi_schema deriva esos dos
 números a mano para que Swagger no prometa más de lo que el servicio tolera.
+
+Además, `EstimationRequest` recorta los espacios de los extremos antes de medir
+la descripción (una de veinte espacios no es una descripción) y rechaza campos
+que no están en el contrato (un `prompt_version` en el cuerpo, en vez de en la
+query, se ignoraría sin aviso).
 """
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..config import get_settings
 
@@ -42,6 +47,17 @@ class OutputFormat(str, Enum):
 
 
 class EstimationRequest(BaseModel):
+    # --- Request validation -----------------------------------------------------
+    # - str_strip_whitespace: recorta los espacios, saltos de línea y tabulaciones
+    #   de los extremos ANTES de aplicar min_length/max_length y el techo del
+    #   operador. Una descripción en blanco, o de relleno alrededor de pocas
+    #   letras, se rechaza con 422 como cualquier descripción corta, y el prompt y
+    #   la clave de caché reciben el texto ya recortado. Solo afecta a
+    #   `description`: los enums se comparan antes de cualquier recorte.
+    # - extra="forbid": un campo que no está en el contrato es un 422 que lo
+    #   nombra, no un dato que se descarta en silencio.
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
     description: str = Field(
         min_length=20,
         max_length=2000,

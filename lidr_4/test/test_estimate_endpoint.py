@@ -325,3 +325,49 @@ def test_provider_failure_detail_goes_to_the_log(cliente) -> None:
     assert fallos[0]["codigo_http"] == 502
     assert fallos[0]["tipo_error"] == "APIConnectionError"
     assert DETALLE_INTERNO in fallos[0]["detalle"]
+
+
+# --- Request validation -----------------------------------------------------
+
+
+def test_una_descripcion_en_blanco_es_422_sin_llamar_al_modelo(cliente) -> None:
+    wrapper = _WrapperFalso()
+    with cliente() as c:
+        c.app.dependency_overrides[get_llm_wrapper] = lambda: wrapper
+        r = c.post("/api/v1/estimate", json={**BODY, "description": " \n\t" * 10})
+
+    assert r.status_code == 422
+    assert r.json()["detail"][0]["loc"] == ["body", "description"]
+    assert wrapper.llamadas == []
+
+
+def test_el_prompt_recibe_la_descripcion_recortada(cliente) -> None:
+    wrapper = _WrapperFalso()
+    with cliente() as c:
+        c.app.dependency_overrides[get_llm_wrapper] = lambda: wrapper
+        r = c.post(
+            "/api/v1/estimate", json={**BODY, "description": f"\n  {BODY['description']}  \n"}
+        )
+
+    assert r.status_code == 200
+    [llamada] = wrapper.llamadas
+    assert (
+        f"<project_description>\n{BODY['description']}\n</project_description>"
+        in (llamada["user_prompt"])
+    )
+
+
+@pytest.mark.parametrize(
+    "ruta", ["/api/v1/estimate", "/api/v1/estimate/structured", "/api/v1/estimate/rendered"]
+)
+def test_un_campo_fuera_del_contrato_es_422_en_los_tres_endpoints(cliente, ruta) -> None:
+    wrapper = _WrapperFalso()
+    with cliente() as c:
+        c.app.dependency_overrides[get_llm_wrapper] = lambda: wrapper
+        r = c.post(ruta, json={**BODY, "prompt_version": "v1"})
+
+    assert r.status_code == 422
+    [detalle] = r.json()["detail"]
+    assert detalle["type"] == "extra_forbidden"
+    assert detalle["loc"] == ["body", "prompt_version"]
+    assert wrapper.llamadas == []

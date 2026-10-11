@@ -290,3 +290,60 @@ def test_los_nombres_anteriores_del_techo_se_siguen_leyendo(monkeypatch) -> None
 
     monkeypatch.setenv("DESCRIPTION_MAX_CHARS", "1800")
     assert Settings(_env_file=None).description_max_chars == 1800
+
+
+# --- Request validation -----------------------------------------------------
+# Descripción en blanco y campos fuera del contrato.
+
+
+@pytest.mark.parametrize(
+    "descripcion",
+    [
+        " " * 25,
+        "\n\t " * 10,
+        "   hola   " + " " * 30,  # relleno alrededor de pocas letras
+    ],
+    ids=["espacios", "saltos-y-tabulaciones", "relleno"],
+)
+def test_una_descripcion_en_blanco_o_de_relleno_se_rechaza(descripcion):
+    """El largo se mide después de recortar: veinte espacios no son una descripción."""
+    with pytest.raises(ValidationError) as error:
+        construir(descripcion)
+    assert error.value.errors()[0]["type"] == "string_too_short"
+
+
+def test_la_descripcion_se_recorta_en_los_extremos():
+    """El prompt y la clave de caché reciben el texto recortado; el interior no se toca."""
+    descripcion = "  Un SaaS   para préstamos\nde equipos a empleados.\t\n"
+    assert construir(descripcion).description == (
+        "Un SaaS   para préstamos\nde equipos a empleados."
+    )
+
+
+def test_los_espacios_de_los_extremos_no_cuentan_para_el_maximo():
+    construir(" " * 10 + DESC_MAXIMA + " " * 10)
+
+
+def test_el_techo_del_operador_mide_el_texto_recortado(monkeypatch):
+    monkeypatch.setenv("DESCRIPTION_MIN_CHARS", "30")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValidationError, match="al menos 30 caracteres"):
+            construir("x" * 25 + " " * 10)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_un_campo_fuera_del_contrato_se_rechaza_y_se_nombra():
+    """Un `prompt_version` en el cuerpo en vez de en la query se ignoraría sin aviso."""
+    with pytest.raises(ValidationError) as error:
+        EstimationRequest(description=DESC_MINIMA, prompt_version="v1", **PETICION_VALIDA)
+    [detalle] = error.value.errors()
+    assert detalle["type"] == "extra_forbidden"
+    assert detalle["loc"] == ("prompt_version",)
+
+
+def test_el_schema_de_swagger_no_admite_campos_extra():
+    assert EstimationRequest.model_json_schema()["additionalProperties"] is False
