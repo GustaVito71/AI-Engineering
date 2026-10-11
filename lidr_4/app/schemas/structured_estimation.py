@@ -42,8 +42,6 @@ MIN_CONFIDENCE_PCT = 30
 OUT_OF_SCOPE_PREFIX = "Fuera de alcance:"
 # La única fase de una estimación rechazada, con todo en cero.
 UNESTIMATED_PHASE = "Sin estimar"
-
-# --- Totals tolerance -------------------------------------------------------
 # Desvío máximo (en %) entre un total declarado (horas o coste) y la suma de las
 # fases. Hasta este valor es un aviso; por encima, un error que se re-pregunta.
 TOTALS_MAX_DEVIATION_PCT = 5
