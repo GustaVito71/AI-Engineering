@@ -229,3 +229,49 @@ def test_una_fase_estimada_en_cero_es_un_error(cambio) -> None:
 def test_una_estimacion_sin_equipo_es_un_error() -> None:
     with pytest.raises(ValidationError, match="al menos un rol"):
         StructuredResult.model_validate(_con(team=[]))
+
+
+# --- Totals tolerance -------------------------------------------------------
+# Hasta TOTALS_MAX_DEVIATION_PCT de diferencia con la suma de las fases es un aviso;
+# por encima, un error que se re-pregunta. VALIDA suma 390 horas y 23.950 EUR.
+
+
+def test_la_tolerancia_es_de_cinco_por_ciento() -> None:
+    from app.schemas.structured_estimation import TOTALS_MAX_DEVIATION_PCT
+
+    assert TOTALS_MAX_DEVIATION_PCT == 5
+
+
+@pytest.mark.parametrize(
+    ("cambio", "campo"),
+    [
+        ({"total_hours": 410}, "totals.hours (410)"),  # +5,1 %
+        ({"total_hours": 370}, "totals.hours (370)"),  # −5,1 %
+        ({"total_cost_eur": 25200}, "totals.cost_eur (25.200)"),  # +5,2 %
+    ],
+)
+def test_un_total_muy_desviado_es_un_error(cambio, campo) -> None:
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(**cambio))
+    mensaje = error.value.errors()[0]["msg"]
+    assert f"{campo} se aleja más de 5 % de la suma de las fases" in mensaje
+    assert "Calcula cada total sumando las fases." in mensaje
+
+
+def test_los_dos_totales_desviados_se_nombran_en_un_solo_error() -> None:
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(total_hours=500, total_cost_eur=30000))
+    mensaje = error.value.errors()[0]["msg"]
+    assert "totals.hours (500)" in mensaje
+    assert "totals.cost_eur (30.000)" in mensaje
+
+
+def test_justo_cinco_por_ciento_sigue_siendo_un_aviso() -> None:
+    """El borde es inclusivo: 409,5 no es un número de horas, pero 25.147,50 EUR sí."""
+    estimacion = StructuredResult.model_validate(_con(total_cost_eur=25147.5))  # +5,0 %
+    assert len(estimacion.total_discrepancies()) == 1
+
+
+def test_la_duracion_total_no_tiene_tolerancia() -> None:
+    """Las fases pueden solaparse: ni aviso ni error por la duración."""
+    StructuredResult.model_validate(_con(total_duration_weeks=1))

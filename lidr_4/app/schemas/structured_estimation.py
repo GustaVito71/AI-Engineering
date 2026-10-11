@@ -13,10 +13,13 @@ Dos clases de comprobaciones, con consecuencias distintas:
   coherencia del rechazo: con confianza menor que `MIN_CONFIDENCE_PCT`, el resumen
   empieza con `OUT_OF_SCOPE_PREFIX` y la estimación es una sola fase
   `UNESTIMATED_PHASE` en cero; con confianza suficiente, todo es positivo.
-- La coherencia de los totales NO es un error. Los totales los declara el modelo
-  (PLAN §3.4) y una suma mal hecha se devuelve igual, con un aviso para el
-  usuario (`total_discrepancies`). Re-preguntar por eso costaría llamadas para
-  corregir un número que el usuario puede ver.
+- La coherencia de los totales depende del tamaño del error. Los totales los
+  declara el modelo (PLAN §3.4). Una diferencia de hasta
+  `TOTALS_MAX_DEVIATION_PCT` con la suma de las fases se devuelve igual, con un
+  aviso para el usuario (`total_discrepancies`): re-preguntar costaría una
+  llamada para corregir un redondeo que el usuario puede ver. Una diferencia
+  mayor es un error y se re-pregunta (`_totals_close_to_phases`): ese total ya
+  no describe la estimación.
 
 El rechazo («Fuera de alcance:») viene de la solución de referencia
 `session_4_live`: le da al modelo una forma estructurada de decir que la
@@ -39,6 +42,11 @@ MIN_CONFIDENCE_PCT = 30
 OUT_OF_SCOPE_PREFIX = "Fuera de alcance:"
 # La única fase de una estimación rechazada, con todo en cero.
 UNESTIMATED_PHASE = "Sin estimar"
+
+# --- Totals tolerance -------------------------------------------------------
+# Desvío máximo (en %) entre un total declarado (horas o coste) y la suma de las
+# fases. Hasta este valor es un aviso; por encima, un error que se re-pregunta.
+TOTALS_MAX_DEVIATION_PCT = 5
 
 
 class Risk(BaseModel):
@@ -198,10 +206,36 @@ class StructuredResult(BaseModel):
             )
         return self
 
+    # --- Totals tolerance -------------------------------------------------------
+    @model_validator(mode="after")
+    def _totals_close_to_phases(self) -> StructuredResult:
+        """Un total que se aleja más de TOTALS_MAX_DEVIATION_PCT de la suma es un error.
+
+        Se mide contra la suma de las fases, que en una estimación es siempre
+        positiva (lo exige `_shape_matches_outcome`). Una suma en cero (el
+        rechazo, todo en cero) no se compara: no hay base para un porcentaje.
+        La duración no se compara: las fases pueden solaparse. Las diferencias
+        menores las informa `total_discrepancies`.
+        """
+        deviated = []
+        for label, declared, total in (
+            ("totals.hours", self.totals.hours, sum(f.hours for f in self.phases)),
+            ("totals.cost_eur", self.totals.cost_eur, sum(f.cost_eur for f in self.phases)),
+        ):
+            if total and abs(declared - total) * 100 > TOTALS_MAX_DEVIATION_PCT * total:
+                deviated.append(
+                    f"{label} ({format_number(declared)}) se aleja más de "
+                    f"{TOTALS_MAX_DEVIATION_PCT} % de la suma de las fases ({format_number(total)})"
+                )
+        if deviated:
+            raise ValueError("; ".join(deviated) + ". Calcula cada total sumando las fases.")
+        return self
+
     def total_discrepancies(self) -> list[str]:
         """Avisos para el usuario si los totales no coinciden con la suma de las fases.
 
-        Lista vacía si cuadran. Horas y coste se comparan exactos: el prompt pide
+        Solo llegan acá diferencias de hasta TOTALS_MAX_DEVIATION_PCT: las
+        mayores ya las rechazó `_totals_close_to_phases`. Lista vacía si cuadran. Horas y coste se comparan exactos: el prompt pide
         sumar, y el redondeo ya está aplicado en cada fase. La duración no se
         compara, porque dos fases pueden solaparse en el calendario.
         """

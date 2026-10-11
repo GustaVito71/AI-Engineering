@@ -194,16 +194,32 @@ def test_texto_y_estructurada_no_comparten_cache(stack, proveedor) -> None:
 
 
 def test_un_total_que_no_cuadra_llega_al_formulario_como_aviso(stack, proveedor) -> None:
-    descuadrada = {**ESTIMACION, "totals": {**ESTIMACION["totals"], "hours": 950}}
+    """Hasta TOTALS_MAX_DEVIATION_PCT (5 %) de diferencia es un aviso: 920 frente a 900."""
+    descuadrada = {**ESTIMACION, "totals": {**ESTIMACION["totals"], "hours": 920}}
     proveedor.respuestas = [json.dumps(descuadrada)]
 
     with stack() as api:
         estimacion, _, avisos, _ = _estimate_structured(API, _payload(), api)
 
-    assert estimacion["totals"]["hours"] == 950
+    assert estimacion["totals"]["hours"] == 920
     assert avisos == [
-        "El total de horas declarado (950) no coincide con la suma de las fases (900)."
+        "El total de horas declarado (920) no coincide con la suma de las fases (900)."
     ]
+
+
+def test_un_total_muy_desviado_se_corrige_con_un_reintento(stack, proveedor) -> None:
+    """Más de 5 % de diferencia es un error: se re-pregunta con el mensaje del validador."""
+    desviada = {**ESTIMACION, "totals": {**ESTIMACION["totals"], "hours": 950}}
+    proveedor.respuestas = [json.dumps(desviada), json.dumps(ESTIMACION)]
+
+    with stack() as api:
+        estimacion, _, avisos, _ = _estimate_structured(API, _payload(), api)
+
+    assert len(proveedor.llamadas) == 2
+    assert estimacion["totals"]["hours"] == 900
+    assert avisos == []
+    reintento = json.dumps(proveedor.llamadas[1]["messages"], ensure_ascii=False)
+    assert "totals.hours (950) se aleja más de 5 % de la suma de las fases (900)" in reintento
 
 
 def test_el_selector_del_formulario_sale_de_health(stack) -> None:
