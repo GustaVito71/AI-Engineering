@@ -14,6 +14,8 @@ build/
 # Testing / linting caches
 .pytest_cache/
 .ruff_cache/
+medir_v4.csv
+medir_v4_fases.csv
 
 # Nota: uv.lock se commitea (ver CAG: elección de app, no de librería).
 # Local Pi runtime state
