@@ -19,7 +19,8 @@ Dónde entran las etapas que faltan, sin tocar el router ni el wrapper:
 
 - guardrails de entrada (WU9): antes del paso 1, y por lo tanto antes de la caché
   del wrapper, así una descripción rechazada nunca se sirve desde la caché;
-- caché semántica (WU10): después de los guardrails de entrada y antes del paso 2;
+- caché semántica (WU10): después de los guardrails de entrada y antes del paso 1:
+  se busca por la descripción, así que un acierto ahorra también el render;
 - guardrail de salida (WU9): después del paso 2.
 
 Los errores no se traducen acá. Los del proveedor (`litellm.Timeout`, etc.) y
@@ -112,6 +113,9 @@ class EstimationService:
         Los avisos son los del wrapper (respaldo no disponible) más los totales
         que no cuadran con la suma de las fases, hasta la tolerancia del schema.
         """
+        # --- Semantic cache ---------------------------------------------------------
+        # WU10: la búsqueda va acá, antes del render y de la llamada, y después de los
+        # guardrails de entrada. Un acierto devuelve la estimación guardada.
         system_prompt, user_prompt = _render(request, version)
         result = await self._llm_wrapper.estimate_structured(
             system_prompt=system_prompt,
@@ -121,6 +125,10 @@ class EstimationService:
             context=context,
         )
 
+        # --- Output guardrail -------------------------------------------------------
+        # WU9: la validación de la salida va acá, antes de los eventos y los avisos.
+        # La escritura en la caché semántica va después de ella: no se guarda una
+        # estimación que el guardrail rechazó.
         if result.estimation.out_of_scope:
             # No es un fallo: el modelo dijo que la descripción no alcanza. Queda en el
             # log para medir cuántas descripciones llegan sin información suficiente.
