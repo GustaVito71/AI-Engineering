@@ -3,6 +3,10 @@
 Diseñado para ser instanciado una sola vez (singleton vía get_llm_wrapper)
 y reutilizado en todas las requests. El Router maneja el failover entre
 el deployment primario y el fallback.
+
+No guarda caché: cada llamada a `estimate` o `estimate_structured` va al
+proveedor. La caché exacta y la semántica las consulta y las escribe
+`EstimationService` (app/services/estimation.py), que decide si hace falta llamar.
 """
 
 from __future__ import annotations
@@ -44,6 +48,40 @@ def fallback_warning(settings: Settings) -> str | None:
     )
 
 
+def emit_completion(
+    result: LLMCallResult, start: float, *, primary_model: str, **extra: object
+) -> None:
+    """Evento de trazabilidad de una estimación completada.
+
+    Lo emiten el wrapper, cuando hubo llamada al proveedor, y el servicio, cuando
+    la respuesta salió de la caché. Con acierto de caché no se paga nada: `coste_usd`
+    es 0 y lo que costó la respuesta original va a `coste_evitado_usd`, que es lo
+    que la caché ahorró. `uso_respaldo` marca las respuestas del modelo de respaldo,
+    que pueden costar bastante más que el primario (ver PLAN.md §7). `extra` agrega
+    campos propios de la salida estructurada (tipo de salida e intentos).
+    """
+    emit(
+        __name__,
+        "estimacion_completada",
+        modelo=result.model,
+        proveedor=result.provider,
+        uso_respaldo=result.model != primary_model,
+        desde_cache=result.cached,
+        tokens_prompt=result.prompt_tokens,
+        tokens_completion=result.completion_tokens,
+        coste_usd=0.0 if result.cached else result.cost_usd,
+        coste_evitado_usd=result.cost_usd if result.cached else 0.0,
+        latencia_ms=round((time.perf_counter() - start) * 1000, 1),
+        prompt_version=result.prompt_version,
+        **extra,
+    )
+
+
+def output_label(response_model: type[StructuredResult]) -> str:
+    """El valor del campo `salida` de los eventos: `renderizada` o `estructurada`."""
+    return "renderizada" if issubclass(response_model, RenderedResult) else "estructurada"
+
+
 @dataclass
 class LLMCallResult:
     """Resultado de una llamada al LLM con metadata para caché y observabilidad."""
@@ -62,13 +100,8 @@ class LLMCallResult:
 class LLMWrapper:
     """Wrapper alrededor del LiteLLM Router con fallback y tracking de coste."""
 
-    def __init__(self, *, settings: Settings, cache: Any) -> None:
-        """Arma el Router con la configuración de `settings`.
-
-        `cache` es una EstimationCache (o la caché nula si Redis está
-        desactivado): ver app/services/cache.py.
-        """
-        self._cache = cache
+    def __init__(self, *, settings: Settings) -> None:
+        """Arma el Router con la configuración de `settings`."""
         primary_model = settings.primary_model
         fallback_model = settings.fallback_model
         self._primary_model = primary_model
@@ -133,6 +166,11 @@ class LLMWrapper:
         # --- Structured response ----------------------------------------------------
         self._structured_max_retries = settings.structured_max_retries
 
+    @property
+    def primary_model(self) -> str:
+        """El modelo primario del Router: con él se arma la clave de caché y `uso_respaldo`."""
+        return self._primary_model
+
     async def estimate(
         self,
         *,
@@ -141,25 +179,8 @@ class LLMWrapper:
         prompt_version: str,
         max_tokens: int | None = None,
     ) -> LLMCallResult:
-        """Ejecuta la estimación con fallback automático y cache."""
+        """Ejecuta la estimación con fallback automático. Siempre llama al proveedor."""
         start = time.perf_counter()
-
-        # Primero la caché: un acierto evita la llamada al proveedor.
-        cache_key = self._cache.make_key(system_prompt, user_prompt)
-        cached = await self._cache.get(cache_key)
-        if cached:
-            result = LLMCallResult(
-                content=cached["content"],
-                model=cached["model"],
-                provider=cached["provider"],
-                prompt_tokens=cached["prompt_tokens"],
-                completion_tokens=cached["completion_tokens"],
-                cost_usd=cached["cost_usd"],
-                prompt_version=prompt_version,
-                cached=True,
-            )
-            self._log_completion(result, start)
-            return result
 
         response = await self._router.acompletion(
             model=self._primary_model,
@@ -198,44 +219,8 @@ class LLMWrapper:
             cost_usd=cost_usd,
             prompt_version=prompt_version,
         )
-        await self._cache.set(
-            cache_key,
-            {
-                "content": result.content,
-                "model": result.model,
-                "provider": result.provider,
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "cost_usd": result.cost_usd,
-            },
-        )
-        self._log_completion(result, start)
+        emit_completion(result, start, primary_model=self._primary_model)
         return result
-
-    def _log_completion(self, result: LLMCallResult, start: float, **extra: object) -> None:
-        """Evento de trazabilidad de una estimación completada.
-
-        Con acierto de caché no se paga nada: `coste_usd` es 0 y lo que costó la
-        respuesta original va a `coste_evitado_usd`, que es lo que la caché ahorró.
-        `uso_respaldo` marca las respuestas del modelo de respaldo, que pueden
-        costar bastante más que el primario (ver PLAN.md §7). `extra` agrega
-        campos propios de la salida estructurada (tipo de salida e intentos).
-        """
-        emit(
-            __name__,
-            "estimacion_completada",
-            modelo=result.model,
-            proveedor=result.provider,
-            uso_respaldo=result.model != self._primary_model,
-            desde_cache=result.cached,
-            tokens_prompt=result.prompt_tokens,
-            tokens_completion=result.completion_tokens,
-            coste_usd=0.0 if result.cached else result.cost_usd,
-            coste_evitado_usd=result.cost_usd if result.cached else 0.0,
-            latencia_ms=round((time.perf_counter() - start) * 1000, 1),
-            prompt_version=result.prompt_version,
-            **extra,
-        )
 
     # --- Structured response ----------------------------------------------------
     async def estimate_structured(
@@ -248,7 +233,7 @@ class LLMWrapper:
         response_model: type[StructuredResult] = StructuredResult,
         context: dict[str, Any] | None = None,
     ) -> StructuredCallResult:
-        """Estimación validada contra `StructuredResult`, con reintentos y caché.
+        """Estimación validada contra `StructuredResult`, con reintentos.
 
         Instructor va sobre `self._router.acompletion`, así que el respaldo, los
         reintentos ante fallos del proveedor y el `model_id` del deployment siguen
@@ -257,13 +242,12 @@ class LLMWrapper:
         el error de validación, hasta `STRUCTURED_MAX_RETRIES` veces.
 
         Cada intento se paga: el coste y los tokens suman todas las respuestas,
-        no solo la que se aceptó. En la caché se guarda el JSON validado como
-        `content`, con la misma forma que las estimaciones de texto.
+        no solo la que se aceptó. `content` es el JSON validado, con la misma forma
+        que las estimaciones de texto.
 
         `response_model` es el schema que se le exige al modelo: `StructuredResult`
         (v3) o `RenderedResult` (v4). `context` llega a los validadores (en v4, el
-        `output_format` de la request); se usa tanto con la respuesta del modelo
-        como al leer la caché.
+        `output_format` de la request).
 
         Errores:
         - `StructuredOutputError`: ningún intento cumplió el schema.
@@ -273,27 +257,7 @@ class LLMWrapper:
         """
         start = time.perf_counter()
 
-        cache_key = self._cache.make_key(system_prompt, user_prompt)
-        cached = await self._cache.get(cache_key)
-        estimation = _cached_estimation(cached, response_model, context)
-        output_kind = (
-            "renderizada" if issubclass(response_model, RenderedResult) else "estructurada"
-        )
-        if estimation is not None:
-            result = StructuredCallResult(
-                content=cached["content"],
-                model=cached["model"],
-                provider=cached["provider"],
-                prompt_tokens=cached["prompt_tokens"],
-                completion_tokens=cached["completion_tokens"],
-                cost_usd=cached["cost_usd"],
-                prompt_version=prompt_version,
-                cached=True,
-                estimation=estimation,
-                attempts=0,
-            )
-            self._log_completion(result, start, salida=output_kind, intentos=result.attempts)
-            return result
+        output_kind = output_label(response_model)
 
         # Un cliente por llamada: el hook junta las respuestas de ESTA estimación,
         # y con un cliente compartido se mezclarían las de requests concurrentes.
@@ -342,18 +306,13 @@ class LLMWrapper:
             estimation=estimation,
             attempts=len(responses),
         )
-        await self._cache.set(
-            cache_key,
-            {
-                "content": result.content,
-                "model": result.model,
-                "provider": result.provider,
-                "prompt_tokens": result.prompt_tokens,
-                "completion_tokens": result.completion_tokens,
-                "cost_usd": result.cost_usd,
-            },
+        emit_completion(
+            result,
+            start,
+            primary_model=self._primary_model,
+            salida=output_kind,
+            intentos=result.attempts,
         )
-        self._log_completion(result, start, salida=output_kind, intentos=result.attempts)
         return result
 
 
@@ -377,24 +336,6 @@ class StructuredOutputError(Exception):
         self.attempts = attempts
         self.cost_usd = cost_usd
         self.last_error = last_error
-
-
-def _cached_estimation(
-    cached: dict | None,
-    response_model: type[StructuredResult] = StructuredResult,
-    context: dict[str, Any] | None = None,
-) -> StructuredResult | None:
-    """La estimación guardada en la caché, o None si no hay o ya no cumple el schema.
-
-    Una entrada que no valida (por ejemplo, porque el schema cambió) se trata
-    como un fallo de caché: se vuelve a pedir y se sobrescribe.
-    """
-    if not cached:
-        return None
-    try:
-        return response_model.model_validate_json(cached["content"], context=context)
-    except (KeyError, ValueError):
-        return None
 
 
 def _usage(response: Any, field: str) -> int:

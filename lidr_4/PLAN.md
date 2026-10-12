@@ -425,7 +425,7 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. Validación de longitud en el formulario sin `max_chars` (Streamlit descartaba entero un pegado de más de 2000 caracteres). 15 tests con transporte mockeado. **Cerrado y probado contra la API real** el 3 de octubre de 2026, con todo en Docker: estimación con OpenAI, caché en Redis (8,3 s → 0,5 ms en la repetición), trazabilidad completa y prompt `v2`. Ver §3.4 para lo que mostró la salida del modelo | Resuelto |
 | ~~**WU7**~~ | Slice vertical end-to-end con `mock_response`: `test/test_e2e.py` recorre formulario de Streamlit → API (lifespan, caché) → prompt `v2` → Router de LiteLLM → caché → formulario, con solo el proveedor y Redis simulados. El armado del cuerpo del formulario pasa a `_build_payload()` para que el test use el mismo que la interfaz. 11 tests. **Cerrado** | Resuelto |
 | **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Ampliado** (6 de octubre de 2026): salida renderizada, con `RenderedResult`, prompt `v4` (`output_format` en el prompt, presentación en `rendered` validada contra las cifras), `POST /api/v1/estimate/rendered` e interruptor «Salida renderizada», excluyente con el anterior (§3.3). 127 tests nuevos (505 en total). **Ajuste** (11 de octubre de 2026): tolerancia de totales del 5 % (hasta ahí aviso, por encima se re-pregunta); 526 tests en total. **Capa de servicio** (11 de octubre de 2026): `EstimationService` (`app/services/estimation.py`) saca del router el render, la llamada y los avisos, sin cambiar el comportamiento; 14 tests nuevos (540 en total). **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
-| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento. Se parte en dos (12 de octubre de 2026). **WU9 A, hecho:** guardrails de entrada en `EstimationService` (`app/services/guardrails.py`), antes del render y de la caché del wrapper, en los tres endpoints: inyección de prompt por regex (rechaza, 422), datos personales (los oculta y avisa en `warnings`) y moderación de OpenAI (rechaza, 422; falla abierta; apagada sin `OPENAI_API_KEY`). Configuración `GUARDRAILS_ENABLED`, `MODERATION_ENABLED`, `MODERATION_MODEL`, `MODERATION_TIMEOUT`; eventos `entrada_rechazada`, `datos_personales_ocultados`, `moderacion_no_disponible`, `moderacion_desactivada`, `guardrails_desactivados`. 84 tests nuevos (624 en total), 14 mutaciones muertas. **WU9 B, pendiente:** guardrail de salida (regla de horas contra tamaño de equipo, filtro de baja confianza), `IncompleteJSONError` y política de reintento; van después del streaming de WU8, porque con streaming las fases salen antes de que termine la respuesta y la regla tiene que poder aplicarse por fase | Medio |
+| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento. Se parte en dos (12 de octubre de 2026). **WU9 A, hecho:** guardrails de entrada en `EstimationService` (`app/services/guardrails.py`), antes del render y de la caché del wrapper, en los tres endpoints: inyección de prompt por regex (rechaza, 422), datos personales (los oculta y avisa en `warnings`) y moderación de OpenAI (rechaza, 422; falla abierta; apagada sin `OPENAI_API_KEY`). Configuración `GUARDRAILS_ENABLED`, `MODERATION_ENABLED`, `MODERATION_MODEL`, `MODERATION_TIMEOUT`; eventos `entrada_rechazada`, `datos_personales_ocultados`, `moderacion_no_disponible`, `moderacion_desactivada`, `guardrails_desactivados`. 84 tests nuevos (624 en total), 14 mutaciones muertas. **Refactor de la caché exacta** al servicio (12 de octubre): 633 tests en total, 10 mutaciones sobre la lógica movida muertas. **WU9 B, pendiente:** guardrail de salida (regla de horas contra tamaño de equipo, filtro de baja confianza), `IncompleteJSONError` y política de reintento; van después del streaming de WU8, porque con streaming las fases salen antes de que termine la respuesta y la regla tiene que poder aplicarse por fase | Medio |
 | **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
 **Renumeración.** El WU2 original ("dominio") pasó a ser WU3 y el actual WU2 es
@@ -549,12 +549,21 @@ Documentadas aquí para que nadie las "corrija" después.
 router solo traduce errores a HTTP. En `lidr_4` esa lógica estaba repartida entre
 `_estimate_validated()` del router y el wrapper, porque no había nada más que
 orquestar. Con WU9 sí: los guardrails de entrada tienen que correr antes de la
-caché, que vive en el wrapper, y no tenían dónde ir. `EstimationService` (render,
+caché, y la caché exacta tiene que consultarse antes del render; con la caché en
+el wrapper ninguna de las dos cosas era posible. `EstimationService` (render,
 llamada, eventos y avisos) quedó entre los dos. Los errores no se traducen en el
 servicio: llegan al router tal cual. Un prompt que no se puede armar es un error
 nuestro y sale como `PromptRenderError` (500), no como un 502 atribuido al
-proveedor. La clave de caché sigue siendo el hash de los dos prompts, sin el
-modelo (la referencia sí lo incluye).
+proveedor. La caché exacta se movió del wrapper al servicio (12 de octubre de 2026) para
+respetar el orden guardrails → exacta → semántica → render → LLM → guardrail de
+salida → escritura en ambas cachés. Como la búsqueda va antes del render, la
+clave ya no es el hash de los dos prompts: es el hash de modelo, versión del
+prompt, parámetros de la request y descripción filtrada (la referencia también
+incluye el modelo). `output_format` entra solo en texto y en v4; en v3 no cambia
+la respuesta. Contrapartida: editar una plantilla sin subir de versión no
+invalida la caché, y las versiones publicadas son inmutables (§3.3). El servicio
+emite `estimacion_completada` en los aciertos y el wrapper solo en las llamadas
+reales al proveedor.
 
 **Los guardrails de entrada ocultan los datos personales y rechazan la inyección (desde el 12/10).**
 Las dos reglas no son iguales. Una descripción con un email o un teléfono sigue

@@ -85,6 +85,8 @@ class _WrapperFalso:
     """Reemplaza al LLMWrapper: valida `estimacion` con el schema y el contexto que
     recibe, como hace el wrapper real, o lanza `error`."""
 
+    primary_model = "openai/gpt-4o-mini"
+
     def __init__(
         self,
         error: Exception | None = None,

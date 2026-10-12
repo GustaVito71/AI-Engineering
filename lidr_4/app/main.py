@@ -138,7 +138,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     configure_logging(settings.log_level)
     # Único cliente de Redis de la app. La caché de estimaciones se arma sobre
-    # él y el wrapper LLM la toma de app.state (ver app/dependencies.py). Se
+    # él y EstimationService la toma de app.state (ver app/dependencies.py). Se
     # cierra en el `finally` para que el pool de conexiones no quede abierto si
     # el arranque falla a mitad o si hay un shutdown abrupto.
     redis_client = await create_cache_client(settings)

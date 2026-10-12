@@ -16,11 +16,20 @@ from redis.asyncio import Redis
 
 from app.cache import close_cache_client, create_cache_client
 from app.config import Settings, get_settings
+from app.schemas.estimation import DetailLevel, EstimationRequest, OutputFormat, ProjectType
 from app.services.cache import EstimationCache, _NoOpCache, create_estimation_cache
+from app.services.estimation import EstimationService
 from app.services.llm_wrapper import LLMWrapper
 
 # Puerto 1: nadie escucha, la conexión se rechaza al instante.
 REDIS_CAIDO = "redis://127.0.0.1:1/0"
+
+_SOLICITUD = EstimationRequest(
+    description="Un SaaS B2B pequeño para gestionar el préstamo de equipos a empleados.",
+    project_type=ProjectType.WEB_SAAS,
+    detail_level=DetailLevel.MEDIUM,
+    output_format=OutputFormat.PHASES_TABLE,
+)
 
 
 def _cache_fake(ttl: int = 60) -> EstimationCache:
@@ -60,11 +69,22 @@ async def test_ttl_is_applied() -> None:
     assert 0 < await cache._client.ttl(key) <= 123
 
 
-def test_key_changes_with_prompt() -> None:
-    """El prompt entero entra en la clave: otra plantilla, otra entrada."""
+def test_la_clave_cambia_con_cada_parte() -> None:
+    """Todas las partes entran en la clave: modelo, versión, parámetros, descripción."""
     cache = _cache_fake()
-    assert cache.make_key("v1", "u") != cache.make_key("v2", "u")
-    assert cache.make_key("v1", "u") == cache.make_key("v1", "u")
+    base = ("openai/gpt-4o-mini", "v2", "web_saas", "medium", "phases_table", "una descripción")
+    assert cache.make_key(*base) == cache.make_key(*base)
+    for posicion in range(len(base)):
+        otra = [*base]
+        otra[posicion] = "otro"
+        assert cache.make_key(*otra) != cache.make_key(*base)
+
+
+def test_las_partes_no_se_pueden_confundir_entre_si() -> None:
+    """Unir las partes con un separador haría chocar ("a|b", "c") con ("a", "b|c")."""
+    cache = _cache_fake()
+    assert cache.make_key("a|b", "c") != cache.make_key("a", "b|c")
+    assert cache.make_key("ab", "c") != cache.make_key("a", "bc")
 
 
 async def test_corrupt_entry_is_a_miss() -> None:
@@ -115,7 +135,8 @@ async def test_estimate_works_with_redis_down(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
     get_settings.cache_clear()
     cliente = await _cliente_caido()
-    wrapper = LLMWrapper(settings=get_settings(), cache=create_estimation_cache(cliente, ttl=60))
+    wrapper = LLMWrapper(settings=get_settings())
+    servicio = EstimationService(wrapper, cache=create_estimation_cache(cliente, ttl=60))
     original = wrapper._router.acompletion
 
     async def sin_red(**kwargs):
@@ -123,13 +144,13 @@ async def test_estimate_works_with_redis_down(monkeypatch) -> None:
 
     wrapper._router.acompletion = sin_red
 
-    res = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
-    assert res.content == "estimación simulada"
+    res = await servicio.estimate_text(_SOLICITUD, "v2")
+    assert res.text == "estimación simulada"
     await close_cache_client(cliente)
 
 
-def test_app_opens_a_single_redis_client_and_the_wrapper_uses_it(monkeypatch) -> None:
-    """Un solo cliente de Redis en toda la app: el del lifespan, que usa el wrapper."""
+def test_app_opens_a_single_redis_client_and_the_service_uses_it(monkeypatch) -> None:
+    """Un solo cliente de Redis en toda la app: el del lifespan, que usa el servicio."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
     monkeypatch.setenv("REDIS_URL", REDIS_CAIDO)
@@ -165,4 +186,4 @@ def test_app_opens_a_single_redis_client_and_the_wrapper_uses_it(monkeypatch) ->
         respuesta = c.post("/api/v1/estimate", json=body)
         assert respuesta.status_code == 200
         assert len(creados) == 1
-        assert app.state.llm_wrapper._cache._client is app.state.cache_client
+        assert app.state.estimation_cache._client is app.state.cache_client

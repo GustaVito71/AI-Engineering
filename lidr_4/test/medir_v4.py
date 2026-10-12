@@ -2,8 +2,8 @@
 
 NO es un test: llama al proveedor (cuesta dinero), no es determinista y no tiene
 aprobado ni fallo, solo números. Por eso no empieza con `test_` y pytest no lo
-recoge. Usa el LLMWrapper real, sin caché (una repetición no puede salir de la
-caché), con las claves y el modelo que lea Settings del `.env`.
+recoge. Usa el LLMWrapper real, que no tiene caché (una repetición no puede salir de
+la caché: eso es del EstimationService), con las claves y el modelo que lea Settings del `.env`.
 
 Corre los 9 casos (3 niveles de detalle × 3 formatos de salida) con la misma
 descripción, `--repetitions` veces cada uno, y por cada ejecución anota:
@@ -55,7 +55,6 @@ from app.schemas.estimation import (
     ProjectType,
 )
 from app.schemas.structured_estimation import RenderedResult, format_number
-from app.services.cache import create_estimation_cache
 from app.services.llm_wrapper import LLMWrapper, StructuredOutputError
 
 DESCRIPTION = (
@@ -296,7 +295,7 @@ async def _measure(args: argparse.Namespace) -> tuple[list[Row], list[PhaseRow]]
     configure_logging("WARNING")
     _track_parse_errors()
     try:
-        wrapper = LLMWrapper(settings=settings, cache=create_estimation_cache(None, 0))
+        wrapper = LLMWrapper(settings=settings)
     except LLMConfigurationError as exc:
         sys.exit(f"Configuración incompleta: {exc}")
 

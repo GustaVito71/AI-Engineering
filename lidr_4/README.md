@@ -209,7 +209,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
 - `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `warnings` de la respuesta llegan al cliente (vacíos si la API no los envía). Versión del prompt: la elegida viaja en `?prompt_version=` y la predeterminada no manda el parámetro; las opciones salen de `/health` y, si la API no responde o es anterior a `prompt_versions`, queda solo la predeterminada.
 - `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_build_payload` + `_estimate`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor). Incluye el selector de versión: las opciones salen del `/health` real y la versión elegida decide el prompt que recibe el proveedor.
 
-- `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos de los guardrails, los del wrapper y los totales que no cuadran, y deja los eventos de negocio; deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor. Con los guardrails: una descripción rechazada no llega al wrapper (422 en los tres endpoints), el prompt lleva la descripción con los datos personales ocultos, y la app arma los guardrails de la configuración una sola vez.
+- `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: la caché exacta (un acierto no renderiza ni llama al wrapper, emite el evento con `desde_cache`, la clave lleva modelo, versión, parámetros y la descripción ya oculta, entradas rotas cuentan como fallo, un rechazo o un error no tocan la caché), arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos de los guardrails, los del wrapper y los totales que no cuadran, y deja los eventos de negocio; deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor. Con los guardrails: una descripción rechazada no llega al wrapper (422 en los tres endpoints), el prompt lleva la descripción con los datos personales ocultos, y la app arma los guardrails de la configuración una sola vez.
 - `test/test_guardrails.py` — los guardrails de entrada, sin red ni claves: cada regla de inyección rechaza lo suyo y no una descripción normal (incluye variantes con tildes, mayúsculas, letras de ancho completo y caracteres invisibles), las etiquetas prohibidas cubren las que usan las plantillas, los datos personales se ocultan y las cifras del proyecto no (IBAN, tarjeta y DNI/NIE con su dígito de control), la moderación recibe el texto ya oculto, rechaza lo que marca y falla abierta, ningún evento lleva el texto de la descripción, y el adaptador de OpenAI se prueba contra un transporte HTTP falso. También la configuración: valores por defecto, vacío = no configurado, y qué queda apagado en cada caso.
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `warnings`.
@@ -217,8 +217,8 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Resultado:** `model` es el nombre del modelo (no el id interno del deployment), `provider` coincide, se respeta `prompt_version` y el coste se calcula.
   - **Configuración:** reintentos, timeout y `max_tokens` salen de `Settings`.
   - **Coste:** si `completion_cost` falla, el coste es 0 y la respuesta sale igual.
-  - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y con acierto de caché; el prompt nunca va al log.
-- `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con el prompt, entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
+  - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y el prompt nunca va al log; el wrapper no guarda caché y siempre llama al proveedor (el evento de los aciertos lo emite el servicio).
+- `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con cada parte (modelo, versión, parámetros, descripción), entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
 - `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 si falta la clave del primario (sin filtrar la clave configurada), estimación con aviso si falta la del respaldo, `/health` con y sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log; `?prompt_version=` (sin query se usa `PROMPT_VERSION`, la query la pisa, una versión inexistente o con `..` da 422 sin llamar al modelo); `/health` lista las versiones disponibles (`prompt_versions`); una descripción en blanco es 422 sin llamar al modelo, el prompt recibe la descripción recortada y un campo fuera del contrato es 422 en los tres endpoints.
 - **Salida estructurada (WU8):**
   - `test/test_structured_schema.py` — qué rechaza el schema (y se vuelve a preguntar: mínimos, topes, textos, rechazos mal formados, fases estimadas en cero) y qué es solo un aviso (totales que no cuadran hasta 5 %, con los números en formato castellano; por encima de 5 % se rechaza); un rechazo bien formado se acepta; `phases` va primero y el resumen al final.
@@ -249,7 +249,7 @@ lidr_4/
 │   ├── config.py                      # Settings (Pydantic Settings, .env)
 │   ├── cache.py                       # Cliente Redis único (lifespan), lectura/escritura fail soft
 │   ├── tracing.py                     # emit(): eventos de trazabilidad con structlog
-│   ├── dependencies.py                # LLMWrapper perezoso, con la caché del lifespan
+│   ├── dependencies.py                # LLMWrapper perezoso; la caché del lifespan va al servicio
 │   ├── routers/
 │   │   └── estimations.py             # POST /api/v1/estimate, /estimate/structured y /estimate/rendered, errores 502/504
 │   ├── schemas/
@@ -267,7 +267,7 @@ lidr_4/
 │   │       ├── v3/                    # salida estructurada (JSON), en castellano
 │   │       └── v4/                    # salida estructurada con la presentación de output_format en rendered
 │   └── services/
-│       ├── cache.py                   # Caché exact-match de estimaciones (sobre app/cache.py)
+│       ├── cache.py                   # Caché exact-match (la usa EstimationService; clave sin render)
 │       ├── estimation.py              # EstimationService: guardrails de entrada, render del prompt, llamada, eventos y avisos
 │       ├── guardrails.py              # Guardrails de entrada: inyección, datos personales, moderación
 │       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad; Instructor para la salida estructurada
@@ -342,7 +342,7 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 
 ## Llamada al LLM, caché y trazabilidad
 
-**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: arma el prompt, llama al wrapper y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) habla con el proveedor. Los guardrails de entrada corren en el servicio antes del render, y por lo tanto antes de la caché del wrapper.
+**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: guardrails de entrada → caché exacta → (caché semántica, WU10) → render → LLM → (guardrail de salida, WU9 B) → escritura en las cachés, y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) solo habla con el proveedor: no guarda caché.
 
 **Guardrails de entrada (WU9 A).** Sobre la descripción, en este orden, en los tres endpoints (`app/services/guardrails.py`):
 
@@ -354,7 +354,7 @@ Son heurísticas, no una garantía: una inyección redactada de otra forma o en 
 
 **Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave. Si falta la clave del respaldo, el Router se arma solo con el primario y cada respuesta lleva el aviso en `warnings`.
 
-**Caché exact-match.** Antes de llamar al proveedor se busca la respuesta en Redis. La clave es un hash del system prompt y el user prompt completos, así que cambiar la plantilla invalida la caché sola. Hay un único cliente de Redis, el que crea el lifespan (`app/cache.py`), y es el que se cierra al apagar. Si Redis está caído, lento o tiene una entrada corrupta, la estimación sale igual sin caché (fail soft, con timeouts de 1 s).
+**Caché exact-match.** Vive en el servicio y se consulta después de los guardrails y antes del render y de la llamada. La clave es un hash del modelo, la versión del prompt, los parámetros de la request (tipo, nivel de detalle y, en texto y en v4, el formato de salida) y la descripción ya filtrada; no depende del prompt renderizado, porque la búsqueda va antes del render. Las versiones publicadas son inmutables, así que la versión invalida la caché: editar una plantilla sin subir de versión ya no cambia la clave. Un acierto no renderiza, no llama al proveedor y no vuelve a escribir; emite `estimacion_completada` con `desde_cache` y los mismos campos. Una entrada incompleta o que ya no cumple el schema cuenta como fallo y se sobrescribe. Se escribe solo después de una respuesta válida. Hay un único cliente de Redis, el que crea el lifespan (`app/cache.py`), y es el que se cierra al apagar. Si Redis está caído, lento o tiene una entrada corrupta, la estimación sale igual sin caché (fail soft, con timeouts de 1 s).
 
 **Trazabilidad.** Cada estimación deja un evento en el log, emitido con `app/tracing.py`:
 
@@ -385,7 +385,7 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `LLM_TIMEOUT` | `30.0` | Segundos por llamada al proveedor |
 | `LLM_MAX_RETRIES` | `2` | Reintentos del Router antes de pasar al respaldo |
 | `LLM_MAX_TOKENS` | `4000` | Tope de tokens de la respuesta |
-| `PROMPT_VERSION` | `v2` | Versión de la plantilla de prompt. Hoy no invalida la caché (su clave ya incluye el prompt completo); con el caché semántico de WU10 será su mecanismo de invalidación |
+| `PROMPT_VERSION` | `v2` | Versión de la plantilla de prompt. Entra en la clave de la caché exacta: es su mecanismo de invalidación (y lo será del semántico en WU10) |
 | `STRUCTURED_PROMPT_VERSION` | `v3` | Versión por defecto de `/estimate/structured`. Tiene que ser de salida estructurada; si no, ese endpoint responde 503 |
 | `STRUCTURED_MAX_RETRIES` | `2` | Veces que se vuelve a preguntar al modelo si la respuesta no cumple el schema. Cada intento se paga. Vale también para `/estimate/rendered` |
 | `RENDERED_PROMPT_VERSION` | `v4` | Versión por defecto de `/estimate/rendered`. Tiene que ser de salida renderizada; si no, ese endpoint responde 503 |

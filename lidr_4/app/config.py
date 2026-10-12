@@ -35,11 +35,10 @@ QUÉ CAMBIÓ RESPECTO DE LIDR_3 Y POR QUÉ
 
 - `PROMPT_VERSION` es obligatoria y no decorativa: elige la plantilla
   (prompts/estimation/vN/) y viaja en cada respuesta y en cada evento de
-  trazabilidad. Hoy NO invalida la caché, ni hace falta: la caché es
-  exact-match y su clave es un hash del prompt completo ya renderizado, así
-  que cualquier cambio de plantilla produce otra clave. Con el caché semántico
-  de WU10 la clave embeberá solo la consulta del usuario, y entonces esta
-  variable pasará a ser el mecanismo de invalidación: sin ella, cambiar la
+  trazabilidad. También invalida la caché: entra en la clave de la caché
+  exacta (modelo, versión, parámetros y descripción; no el prompt renderizado,
+  porque la búsqueda va antes del render) y será el mecanismo del caché
+  semántico de WU10. Sin ella, cambiar la
   plantilla seguiría sirviendo respuestas viejas en silencio.
 """
 

@@ -8,7 +8,7 @@ Sin red: cada llamada al Router recibe un `mock_response`, que puede ser un JSON
 - que agotar los intentos da `StructuredOutputError`, con intentos y coste;
 - que los fallos del proveedor llegan como las excepciones de LiteLLM, no
   envueltos por Instructor (el endpoint distingue 504 de 502 por el tipo);
-- caché, respaldo y trazabilidad, como en `estimate`.
+- respaldo y trazabilidad, como en `estimate` (la caché no es del wrapper).
 """
 
 from __future__ import annotations
@@ -48,21 +48,7 @@ VALIDA = json.dumps(ESTIMACION)
 INVALIDA = json.dumps({**ESTIMACION, "team": []})  # sin equipo: no cumple el schema
 
 
-class _CacheMemoria:
-    def __init__(self) -> None:
-        self.datos: dict[str, dict] = {}
-
-    def make_key(self, system_prompt, user_prompt):
-        return f"{system_prompt}|{user_prompt}"
-
-    async def get(self, key):
-        return self.datos.get(key)
-
-    async def set(self, key, value):
-        self.datos[key] = value
-
-
-def _construir(monkeypatch, cache=None, **entorno: str) -> LLMWrapper:
+def _construir(monkeypatch, **entorno: str) -> LLMWrapper:
     base = {
         "OPENAI_API_KEY": "sk-openai",
         "ANTHROPIC_API_KEY": "sk-anthropic",
@@ -73,7 +59,7 @@ def _construir(monkeypatch, cache=None, **entorno: str) -> LLMWrapper:
     for variable, valor in {**base, **entorno}.items():
         monkeypatch.setenv(variable, valor)
     get_settings.cache_clear()
-    return LLMWrapper(settings=get_settings(), cache=cache or _CacheMemoria())
+    return LLMWrapper(settings=get_settings())
 
 
 def _respuestas(wrapper: LLMWrapper, *respuestas, **extra) -> list[dict]:
@@ -236,41 +222,21 @@ async def test_el_respaldo_responde_si_cae_el_primario(monkeypatch) -> None:
     assert result.provider == "anthropic"
 
 
-# --- Caché ---------------------------------------------------------------------------------
+# --- Sin caché -----------------------------------------------------------------------------
 
 
-async def test_la_segunda_estimacion_sale_de_la_cache(monkeypatch) -> None:
+async def test_el_wrapper_no_guarda_cache_siempre_llama_al_proveedor(monkeypatch) -> None:
+    """La caché es del servicio (test_estimation_service.py): dos llamadas, dos respuestas."""
     w = _construir(monkeypatch)
     vistos = _respuestas(w, VALIDA, VALIDA)
 
     primera = await _estimate(w)
     segunda = await _estimate(w)
 
-    assert len(vistos) == 1
-    assert segunda.cached
-    assert segunda.attempts == 0
-    assert segunda.estimation == primera.estimation
-    assert segunda.cost_usd == primera.cost_usd
-
-
-async def test_una_entrada_de_cache_que_no_cumple_el_schema_se_ignora(monkeypatch) -> None:
-    cache = _CacheMemoria()
-    cache.datos["sistema|usuario"] = {
-        "content": "| Fase | Semanas |",  # una estimación de texto, no JSON
-        "model": PRIMARIO,
-        "provider": "openai",
-        "prompt_tokens": 1,
-        "completion_tokens": 1,
-        "cost_usd": 0.1,
-    }
-    w = _construir(monkeypatch, cache=cache)
-    vistos = _respuestas(w, VALIDA)
-
-    result = await _estimate(w)
-
-    assert len(vistos) == 1
-    assert not result.cached
-    assert json.loads(cache.datos["sistema|usuario"]["content"]) == ESTIMACION
+    assert len(vistos) == 2
+    assert not primera.cached
+    assert not segunda.cached
+    assert segunda.attempts == 1
 
 
 # --- Trazabilidad ----------------------------------------------------------------------------

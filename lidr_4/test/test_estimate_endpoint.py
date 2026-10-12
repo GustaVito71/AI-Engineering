@@ -52,6 +52,8 @@ def cliente(monkeypatch):
 class _WrapperFalso:
     """Reemplaza al LLMWrapper: devuelve un resultado fijo o lanza `error`."""
 
+    primary_model = "openai/gpt-4o-mini"
+
     def __init__(
         self,
         error: Exception | None = None,

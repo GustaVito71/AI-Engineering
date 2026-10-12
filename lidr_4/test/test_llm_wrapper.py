@@ -27,35 +27,6 @@ PRIMARIO = "openai/gpt-4o-mini"
 RESPALDO = "anthropic/claude-haiku-4-5"
 
 
-class _CacheVacia:
-    """Caché que nunca acierta: obliga a pasar siempre por el Router."""
-
-    def make_key(self, *_):
-        return "k"
-
-    async def get(self, _):
-        return None
-
-    async def set(self, *_):
-        pass
-
-
-class _CacheMemoria:
-    """Caché en memoria que sí guarda: la segunda llamada igual es un acierto."""
-
-    def __init__(self) -> None:
-        self.datos: dict[str, dict] = {}
-
-    def make_key(self, system_prompt, user_prompt):
-        return f"{system_prompt}|{user_prompt}"
-
-    async def get(self, key):
-        return self.datos.get(key)
-
-    async def set(self, key, value):
-        self.datos[key] = value
-
-
 def _construir(monkeypatch, **entorno: str) -> LLMWrapper:
     """Fija el entorno, reconstruye Settings y crea el wrapper como en dependencies.py.
 
@@ -64,7 +35,7 @@ def _construir(monkeypatch, **entorno: str) -> LLMWrapper:
     for variable, valor in entorno.items():
         monkeypatch.setenv(variable, valor)
     get_settings.cache_clear()
-    return LLMWrapper(settings=get_settings(), cache=_CacheVacia())
+    return LLMWrapper(settings=get_settings())
 
 
 @pytest.fixture
@@ -156,7 +127,7 @@ def test_uses_the_settings_it_receives() -> None:
         fallback_model=RESPALDO,
         llm_max_retries=4,
     )
-    w = LLMWrapper(settings=s, cache=_CacheVacia())
+    w = LLMWrapper(settings=s)
     assert w.warnings == ()
     assert w._router.num_retries == 4
 
@@ -287,21 +258,16 @@ async def test_tracing_flags_the_fallback(wrapper) -> None:
     assert evento["uso_respaldo"] is True
 
 
-async def test_tracing_on_cache_hit_reports_avoided_cost(wrapper) -> None:
-    wrapper._cache = _CacheMemoria()
+async def test_el_wrapper_no_guarda_cache_siempre_llama_al_proveedor(wrapper) -> None:
+    """La caché es del servicio (test_estimation_service.py): dos llamadas, dos respuestas."""
     vistos = _con_mock(wrapper, mock_response="ok")
 
     primera = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
-    with capture_logs() as logs:
-        segunda = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
+    segunda = await wrapper.estimate(system_prompt="s", user_prompt="u", prompt_version="v1")
 
-    assert len(vistos) == 1  # la segunda no llamó al proveedor
+    assert len(vistos) == 2
     assert primera.cached is False
-    assert segunda.cached is True
-    [evento] = _eventos(logs)
-    assert evento["desde_cache"] is True
-    assert evento["coste_usd"] == 0.0
-    assert evento["coste_evitado_usd"] == primera.cost_usd > 0
+    assert segunda.cached is False
 
 
 async def test_tracing_never_logs_the_prompt(wrapper) -> None:

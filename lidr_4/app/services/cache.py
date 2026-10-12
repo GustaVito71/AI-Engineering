@@ -1,9 +1,14 @@
 """Caché exact-match de respuestas del LLM, sobre Redis.
 
-La clave es un hash determinista del par (system_prompt, user_prompt): como el
-prompt entero entra en la clave, cambiar la plantilla invalida la caché solo.
-TTL configurable con CACHE_TTL. REDIS_URL vacío desactiva la caché sin tocar
-código.
+La clave es un hash determinista de las partes que le pasa `EstimationService`
+(app/services/estimation.py), que es quien consulta y escribe la caché; el wrapper
+no la toca. Hoy son el modelo, la versión del prompt, los parámetros de la request
+y la descripción ya filtrada por los guardrails. Como la consulta ocurre antes de
+armar el prompt, la clave no incluye el texto renderizado: lo que invalida la caché
+al cambiar una plantilla es la versión del prompt (las versiones publicadas son
+inmutables, PLAN.md §3.3), y el modelo entra para que cambiar PRIMARY_MODEL no sirva
+respuestas de otro. TTL configurable con CACHE_TTL. REDIS_URL vacío desactiva la
+caché sin tocar código.
 
 Fail soft por diseño, igual que app/cache.py: si Redis está caído, lento o
 devuelve una entrada corrupta, la lectura cuenta como miss y la escritura se
@@ -18,13 +23,25 @@ apagar). Así hay un solo pool de conexiones y es el que se cierra.
 from __future__ import annotations
 
 import hashlib
+import json
+from typing import Protocol
 
 from redis.asyncio import Redis
 
 from app.cache import get_cached_estimation, set_cached_estimation
 
 
-def create_estimation_cache(client: Redis | None, ttl: int) -> EstimationCache | _NoOpCache:
+class ExactCache(Protocol):
+    """Lo que `EstimationService` necesita de la caché exacta."""
+
+    def make_key(self, *parts: str) -> str: ...
+
+    async def get(self, key: str) -> dict | None: ...
+
+    async def set(self, key: str, value: dict) -> None: ...
+
+
+def create_estimation_cache(client: Redis | None, ttl: int) -> ExactCache:
     """La caché sobre el cliente del lifespan, o una desactivada si no hay cliente.
 
     `client` es None cuando REDIS_URL está vacío: es el modo "sin caché" de
@@ -45,9 +62,12 @@ class EstimationCache:
         self._client = client
         self._ttl = ttl
 
-    def make_key(self, system_prompt: str, user_prompt: str) -> str:
-        """Clave determinista a partir del par de prompts."""
-        combined = f"{system_prompt}|{user_prompt}"
+    def make_key(self, *parts: str) -> str:
+        """Clave determinista a partir de las partes, en orden.
+
+        Se serializan como una lista JSON y no unidas con un separador: así
+        `("a|b", "c")` y `("a", "b|c")` dan claves distintas."""
+        combined = json.dumps(parts, ensure_ascii=False)
         return f"estimator:{hashlib.sha256(combined.encode()).hexdigest()}"
 
     async def get(self, key: str) -> dict | None:
@@ -62,7 +82,7 @@ class EstimationCache:
 class _NoOpCache:
     """Caché desactivada (REDIS_URL vacío): siempre miss, nunca guarda."""
 
-    def make_key(self, _system: str, _user: str) -> str:
+    def make_key(self, *_parts: str) -> str:
         return "noop"
 
     async def get(self, _key: str) -> None:
