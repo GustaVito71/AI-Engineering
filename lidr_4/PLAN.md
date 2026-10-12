@@ -424,8 +424,8 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU5**~~ | Gateway async: `Router` con primario y respaldo, claves por proveedor, coste con `completion_cost()`, provider vía `_hidden_params["model_id"]`. Respaldo opcional: sin su clave el servicio sigue con el primario y avisa al usuario (`warnings` en la respuesta y en `/health`). Caché exact-match fail soft sobre un único cliente de Redis. Errores 503 (falta la clave del primario), 502 y 504 con mensaje limpio. Trazabilidad con `estimacion_completada` / `estimacion_fallida`; los logs de LiteLLM quedan en `WARNING` con el formato de structlog, sin prompt ni claves. Devuelve `text: str` sin parsear. 61 tests (wrapper, caché, endpoint, logs), independientes del `.env` y del proveedor primario. **Cerrado** | Resuelto |
 | ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. Validación de longitud en el formulario sin `max_chars` (Streamlit descartaba entero un pegado de más de 2000 caracteres). 15 tests con transporte mockeado. **Cerrado y probado contra la API real** el 3 de octubre de 2026, con todo en Docker: estimación con OpenAI, caché en Redis (8,3 s → 0,5 ms en la repetición), trazabilidad completa y prompt `v2`. Ver §3.4 para lo que mostró la salida del modelo | Resuelto |
 | ~~**WU7**~~ | Slice vertical end-to-end con `mock_response`: `test/test_e2e.py` recorre formulario de Streamlit → API (lifespan, caché) → prompt `v2` → Router de LiteLLM → caché → formulario, con solo el proveedor y Redis simulados. El armado del cuerpo del formulario pasa a `_build_payload()` para que el test use el mismo que la interfaz. 11 tests. **Cerrado** | Resuelto |
-| **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Ampliado** (6 de octubre de 2026): salida renderizada, con `RenderedResult`, prompt `v4` (`output_format` en el prompt, presentación en `rendered` validada contra las cifras), `POST /api/v1/estimate/rendered` e interruptor «Salida renderizada», excluyente con el anterior (§3.3). 127 tests nuevos (505 en total). **Ajuste** (11 de octubre de 2026): tolerancia de totales del 5 % (hasta ahí aviso, por encima se re-pregunta); 526 tests en total. **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
-| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento | Medio |
+| **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Ampliado** (6 de octubre de 2026): salida renderizada, con `RenderedResult`, prompt `v4` (`output_format` en el prompt, presentación en `rendered` validada contra las cifras), `POST /api/v1/estimate/rendered` e interruptor «Salida renderizada», excluyente con el anterior (§3.3). 127 tests nuevos (505 en total). **Ajuste** (11 de octubre de 2026): tolerancia de totales del 5 % (hasta ahí aviso, por encima se re-pregunta); 526 tests en total. **Capa de servicio** (11 de octubre de 2026): `EstimationService` (`app/services/estimation.py`) saca del router el render, la llamada y los avisos, sin cambiar el comportamiento; 14 tests nuevos (540 en total). **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
+| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento. Los de entrada van en `EstimationService`, antes del render y de la caché del wrapper | Medio |
 | **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
 **Renumeración.** El WU2 original ("dominio") pasó a ser WU3 y el actual WU2 es
@@ -543,6 +543,18 @@ con eventos de token. No hizo falta.
 ## 8. Decisiones que parecen extrañas y no lo son
 
 Documentadas aquí para que nadie las "corrija" después.
+
+**El router no tiene lógica de estimación (desde el 11/10).** La referencia de
+`session_4_live` tiene `app/services/estimation.py`, un orquestador donde el
+router solo traduce errores a HTTP. En `lidr_4` esa lógica estaba repartida entre
+`_estimate_validated()` del router y el wrapper, porque no había nada más que
+orquestar. Con WU9 sí: los guardrails de entrada tienen que correr antes de la
+caché, que vive en el wrapper, y no tenían dónde ir. `EstimationService` (render,
+llamada, eventos y avisos) quedó entre los dos. Los errores no se traducen en el
+servicio: llegan al router tal cual. Un prompt que no se puede armar es un error
+nuestro y sale como `PromptRenderError` (500), no como un 502 atribuido al
+proveedor. La clave de caché sigue siendo el hash de los dos prompts, sin el
+modelo (la referencia sí lo incluye).
 
 **Los totales los declara el modelo (desde el 29/09, ver §3.4).** La referencia de
 `session_3` los pide y después los verifica con `abs(suma - declarado) <= 1` para

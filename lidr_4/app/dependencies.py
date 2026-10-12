@@ -12,10 +12,11 @@ hay caché, y eso es el estado válido "sin caché", no un error.
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import Depends, Request
 
 from app.config import get_settings
 from app.services.cache import create_estimation_cache
+from app.services.estimation import EstimationService
 from app.services.llm_wrapper import LLMWrapper
 
 
@@ -30,3 +31,13 @@ def get_llm_wrapper(request: Request) -> LLMWrapper:
         wrapper = LLMWrapper(settings=settings, cache=cache)
         state.llm_wrapper = wrapper
     return wrapper
+
+
+def get_estimation_service(llm_wrapper: LLMWrapper = Depends(get_llm_wrapper)) -> EstimationService:
+    """El pipeline de la estimación sobre el wrapper compartido.
+
+    No guarda estado, así que se arma en cada request. Depende de
+    `get_llm_wrapper`, y por eso un test que reemplaza el wrapper con
+    `dependency_overrides` reemplaza también el que usa el servicio.
+    """
+    return EstimationService(llm_wrapper)

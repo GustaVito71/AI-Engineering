@@ -16,6 +16,7 @@ La inteligencia adicional (guardrails, cache semántico) se construye encima de 
 | Contrato de entrada (`EstimationRequest` / `EstimationResponse`) | Hecho (WU2) |
 | Prompts versionados (`system.j2`, `user.j2`, `examples.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
 | Wrapper LLM (`app/services/llm_wrapper.py`), caché, router `POST /api/v1/estimate`, errores y trazabilidad | Hecho (WU5) |
+| Servicio de estimación (`app/services/estimation.py`): el pipeline entre el router y el wrapper, donde entrarán los guardrails de WU9 | Hecho |
 | Cliente Streamlit | Hecho (WU6) |
 | Slice de punta a punta: formulario → API → proveedor → caché → formulario | Hecho (WU7) |
 | Salida estructurada: `StructuredResult` con Instructor sobre el Router, prompt `v3`, `POST /api/v1/estimate/structured`, interruptor en el formulario | Hecho, sin streaming (WU8) |
@@ -205,6 +206,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
 - `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `warnings` de la respuesta llegan al cliente (vacíos si la API no los envía). Versión del prompt: la elegida viaja en `?prompt_version=` y la predeterminada no manda el parámetro; las opciones salen de `/health` y, si la API no responde o es anterior a `prompt_versions`, queda solo la predeterminada.
 - `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_build_payload` + `_estimate`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor). Incluye el selector de versión: las opciones salen del `/health` real y la versión elegida decide el prompt que recibe el proveedor.
 
+- `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos del wrapper con los totales que no cuadran y deja los eventos de negocio, deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor.
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `warnings`.
   - **Router y respaldo:** el Router tiene los dos modelos, y si el primario falla responde el de respaldo.
@@ -262,6 +264,7 @@ lidr_4/
 │   │       └── v4/                    # salida estructurada con la presentación de output_format en rendered
 │   └── services/
 │       ├── cache.py                   # Caché exact-match de estimaciones (sobre app/cache.py)
+│       ├── estimation.py              # EstimationService: render del prompt, llamada, eventos y avisos
 │       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad; Instructor para la salida estructurada
 ├── test/
 │   ├── conftest.py
@@ -279,6 +282,7 @@ lidr_4/
 │   ├── test_estimate_rendered_endpoint.py
 │   ├── test_frontend_rendered.py
 │   ├── test_e2e_rendered.py
+│   ├── test_estimation_service.py
 │   ├── test_llm_wrapper.py
 │   ├── test_cache.py
 │   ├── test_estimate_endpoint.py
@@ -331,6 +335,8 @@ La versión se elige por petición con `?prompt_version=` o, si no se indica, co
 Lo que vive **fuera** de la versión (en código): el contrato (`EstimationRequest`), el switch de versión, el wrapper y la aritmética de los ejemplos (`loader.py`). Todo lo demás (rol del modelo, reglas, ejemplos, tarifas, formatos de salida, niveles de detalle) vive en `v1/`. Si para cambiar el comportamiento del modelo hay que tocar Python, la separación está rota.
 
 ## Llamada al LLM, caché y trazabilidad
+
+**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: arma el prompt, llama al wrapper y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) habla con el proveedor. Los guardrails de WU9 entrarán en el servicio antes del render, y por lo tanto antes de la caché del wrapper.
 
 **Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave. Si falta la clave del respaldo, el Router se arma solo con el primario y cada respuesta lleva el aviso en `warnings`.
 
