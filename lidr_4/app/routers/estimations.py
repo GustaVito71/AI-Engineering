@@ -14,6 +14,9 @@ Errores que pueden devolver, además del 422 de validación de Pydantic:
 
 - 422: `?prompt_version=` pide una versión que no existe, o que es del otro
   tipo de salida. El mensaje lista las versiones disponibles del endpoint.
+- 422: un guardrail de entrada rechazó la descripción (instrucciones dirigidas al
+  modelo, o contenido que marca la moderación). El mensaje es fijo por regla; la
+  regla que saltó queda en el log (`entrada_rechazada`).
 - 503: falta configuración local (una API key). Lo resuelve el handler de
   LLMConfigurationError en app/main.py, no este router.
 - 504: el proveedor de LLM no respondió a tiempo (agotados reintentos y respaldo).
@@ -50,6 +53,7 @@ from app.schemas.structured_estimation import (
     StructuredResult,
 )
 from app.services.estimation import EstimationService, PromptRenderError, StructuredEstimation
+from app.services.guardrails import InputGuardrailViolation
 from app.services.llm_wrapper import StructuredOutputError
 from app.tracing import emit
 
@@ -102,6 +106,9 @@ async def estimate(
     except PromptRenderError:
         # Fallo propio al armar el prompt, no del proveedor: no es un 502.
         raise
+    except InputGuardrailViolation as exc:
+        # El cliente tiene que reescribir la descripción: 422, no un fallo del proveedor.
+        raise HTTPException(status_code=422, detail=exc.message) from None
     except litellm.Timeout as exc:
         # Timeout es subclase de APIConnectionError: tiene que ir antes que el
         # caso general para que no lo capture el 502.
@@ -266,6 +273,9 @@ async def _estimate_validated(
     except PromptRenderError:
         # Fallo propio al armar el prompt, no del proveedor: no es un 502.
         raise
+    except InputGuardrailViolation as exc:
+        # El cliente tiene que reescribir la descripción: 422, no un fallo del proveedor.
+        raise HTTPException(status_code=422, detail=exc.message) from None
     except StructuredOutputError as exc:
         # La respuesta llegó pero no sirve: es un fallo del proveedor visto
         # desde el cliente (502), con su propio mensaje. Los intentos ya se

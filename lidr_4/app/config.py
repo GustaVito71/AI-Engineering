@@ -83,6 +83,16 @@ def _normalize_log_level(value: str) -> str:
     return value or "INFO"
 
 
+# --- Input guardrails -------------------------------------------------------
+def _empty_is_true(value: object) -> object:
+    """Vacío = "no configurado" = activado, igual que el resto de Settings.
+
+    pydantic-settings parsea `GUARDRAILS_ENABLED=` como `""`, y `""` no es un bool
+    válido: un `.env` a medio completar rompería el arranque. Cualquier otro valor
+    pasa tal cual, así que un `GUARDRAILS_ENABLED=nunca` sigue siendo un error."""
+    return True if value == "" else value
+
+
 # El contrato de `description` vive en el Field de
 # app.schemas.estimation.EstimationRequest. Se replica acá porqueSettings no
 # puede importar al schema (sería un ciclo: el schema importa get_settings) y
@@ -182,6 +192,18 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("description_max_chars", "descripcion_max_chars"),
     )
 
+    # --- Input guardrails -------------------------------------------------------
+    # Reglas que corren sobre la descripción antes del render y de la caché (ver
+    # app/services/guardrails.py). GUARDRAILS_ENABLED=false las apaga todas, con
+    # un evento en el log; sirve para medir sin ellas, no para producción.
+    guardrails_enabled: Annotated[bool, BeforeValidator(_empty_is_true)] = True
+    # Moderación de OpenAI (el endpoint no se cobra). Necesita OPENAI_API_KEY: sin
+    # clave queda apagada y el resto de las reglas sigue. Falla abierta: si no
+    # responde en MODERATION_TIMEOUT segundos, la descripción sigue su camino.
+    moderation_enabled: Annotated[bool, BeforeValidator(_empty_is_true)] = True
+    moderation_model: str = "omni-moderation-latest"
+    moderation_timeout: float = 3.0
+
     # --- Frontend. URL base del API para Streamlit (cliente HTTP separado).
     estimator_api_base_url: str = "http://localhost:8001"
 
@@ -201,6 +223,7 @@ class Settings(BaseSettings):
         self.app_env = self.app_env or "local"
         self.primary_model = self.primary_model or "openai/gpt-4o-mini"
         self.fallback_model = self.fallback_model or "anthropic/claude-haiku-4-5"
+        self.moderation_model = self.moderation_model or "omni-moderation-latest"
         # pydantic-settings parsea un `PROMPT_VERSION=` vacío como "", y "" no
         # es un nombre de archivo válido: un .env a medio completar rompería el
         # arranque en el peor momento. Acá se valida el dominio a mano porque
@@ -283,6 +306,16 @@ class Settings(BaseSettings):
         if self.structured_max_retries < 0:
             raise ValueError(
                 f"STRUCTURED_MAX_RETRIES={self.structured_max_retries} no puede ser negativo."
+            )
+        return self
+
+    # --- Input guardrails -------------------------------------------------------
+    @model_validator(mode="after")
+    def validate_input_guardrails(self) -> "Settings":
+        """Un timeout de moderación que no espera nada rechazaría todo en silencio."""
+        if self.moderation_timeout <= 0:
+            raise ValueError(
+                f"MODERATION_TIMEOUT={self.moderation_timeout} tiene que ser mayor que cero."
             )
         return self
 

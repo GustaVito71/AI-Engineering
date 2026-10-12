@@ -425,7 +425,7 @@ Cada unidad es commiteable y revisable por separado. Ninguna depende de una post
 | ~~**WU6**~~ | `EstimationRequest` en Streamlit → `POST /api/v1/estimate`. Validación de longitud en el formulario sin `max_chars` (Streamlit descartaba entero un pegado de más de 2000 caracteres). 15 tests con transporte mockeado. **Cerrado y probado contra la API real** el 3 de octubre de 2026, con todo en Docker: estimación con OpenAI, caché en Redis (8,3 s → 0,5 ms en la repetición), trazabilidad completa y prompt `v2`. Ver §3.4 para lo que mostró la salida del modelo | Resuelto |
 | ~~**WU7**~~ | Slice vertical end-to-end con `mock_response`: `test/test_e2e.py` recorre formulario de Streamlit → API (lifespan, caché) → prompt `v2` → Router de LiteLLM → caché → formulario, con solo el proveedor y Redis simulados. El armado del cuerpo del formulario pasa a `_build_payload()` para que el test use el mismo que la interfaz. 11 tests. **Cerrado** | Resuelto |
 | **WU8** | Structured output + `ijson` + eventos `tarea`. **Parcial** (5 de octubre de 2026): `StructuredResult` con Instructor sobre el Router, prompt `v3` (tipo de salida declarado en `examples.yaml`, ejemplo de rechazo), `POST /api/v1/estimate/structured` (con `cached`), interruptor «Salida estructurada» en el formulario; totales que no cuadran como aviso (§3.3). 155 tests nuevos (377 en total). **Ampliado** (6 de octubre de 2026): salida renderizada, con `RenderedResult`, prompt `v4` (`output_format` en el prompt, presentación en `rendered` validada contra las cifras), `POST /api/v1/estimate/rendered` e interruptor «Salida renderizada», excluyente con el anterior (§3.3). 127 tests nuevos (505 en total). **Ajuste** (11 de octubre de 2026): tolerancia de totales del 5 % (hasta ahí aviso, por encima se re-pregunta); 526 tests en total. **Capa de servicio** (11 de octubre de 2026): `EstimationService` (`app/services/estimation.py`) saca del router el render, la llamada y los avisos, sin cambiar el comportamiento; 14 tests nuevos (540 en total). **Pendiente:** `ijson` y eventos por fase | **Alto** — depende de WU0 |
-| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento. Los de entrada van en `EstimationService`, antes del render y de la caché del wrapper | Medio |
+| **WU9** | Guardrails entrada/salida + `IncompleteJSONError` + política de reintento. Se parte en dos (12 de octubre de 2026). **WU9 A, hecho:** guardrails de entrada en `EstimationService` (`app/services/guardrails.py`), antes del render y de la caché del wrapper, en los tres endpoints: inyección de prompt por regex (rechaza, 422), datos personales (los oculta y avisa en `warnings`) y moderación de OpenAI (rechaza, 422; falla abierta; apagada sin `OPENAI_API_KEY`). Configuración `GUARDRAILS_ENABLED`, `MODERATION_ENABLED`, `MODERATION_MODEL`, `MODERATION_TIMEOUT`; eventos `entrada_rechazada`, `datos_personales_ocultados`, `moderacion_no_disponible`, `moderacion_desactivada`, `guardrails_desactivados`. 84 tests nuevos (624 en total), 14 mutaciones muertas. **WU9 B, pendiente:** guardrail de salida (regla de horas contra tamaño de equipo, filtro de baja confianza), `IncompleteJSONError` y política de reintento; van después del streaming de WU8, porque con streaming las fases salen antes de que termine la respuesta y la regla tiene que poder aplicarse por fase | Medio |
 | **WU10** | Caché semántico + guarda anti-envenenamiento + `prompt_version` | Medio |
 
 **Renumeración.** El WU2 original ("dominio") pasó a ser WU3 y el actual WU2 es
@@ -556,6 +556,35 @@ nuestro y sale como `PromptRenderError` (500), no como un 502 atribuido al
 proveedor. La clave de caché sigue siendo el hash de los dos prompts, sin el
 modelo (la referencia sí lo incluye).
 
+**Los guardrails de entrada ocultan los datos personales y rechazan la inyección (desde el 12/10).**
+Las dos reglas no son iguales. Una descripción con un email o un teléfono sigue
+siendo una descripción de proyecto: rechazarla tiraría casos legítimos y le pediría
+al usuario que reescriba algo que no estaba mal. Se oculta con un marcador
+(`[EMAIL]`) antes del render, de la caché y del log, y la respuesta lleva un aviso.
+Una inyección no tiene versión legítima que salvar: se rechaza con 422 y un mensaje
+fijo por regla, sin repetir lo escrito. Decisión mía, no confirmada por la referencia:
+`session_4_live` no deja ver (en la página que se pudo leer) qué hace con los datos
+personales. Si se prefiere rechazarlos, es cambiar el `return` de una regla.
+
+**La moderación falla abierta (desde el 12/10).** Es un filtro extra sobre un tercero
+(OpenAI), no la única defensa: las reglas locales corren antes. Si no responde, no
+tiene clave o tarda más de `MODERATION_TIMEOUT` (3 s, reintentos del cliente
+incluidos), la descripción sigue y queda `moderacion_no_disponible` en el log. Fallar
+cerrado dejaría el servicio sin estimar por una avería ajena. Se consulta con el texto
+ya oculto, para no mandar datos personales a un tercero. El endpoint no se cobra
+(documentación de OpenAI, verificada el 12/10) pero tiene límites de tasa por tier de
+la cuenta (250 peticiones por minuto y 5.000 por día en el gratuito).
+
+**Los guardrails de entrada son heurísticas (desde el 12/10).** Las reglas de
+inyección buscan frases concretas en castellano e inglés, y se escribieron para no
+saltar con descripciones normales: «mostrar el system prompt configurado a los
+administradores» o «detectar jailbreak en móviles» pasan (están en los tests). A
+cambio, una inyección redactada de otra forma pasa. `entrada_rechazada` deja la regla
+que saltó, que es lo que permite medir los falsos positivos con tráfico real antes de
+tocar un patrón. Un IBAN o una tarjeta con el dígito de control mal no se reconocen
+como tales, pero sus grupos de dígitos los oculta igual la regla de teléfonos: se
+prefiere ocultar de más.
+
 **Los totales los declara el modelo (desde el 29/09, ver §3.4).** La referencia de
 `session_3` los pide y después los verifica con `abs(suma - declarado) <= 1` para
 las horas y `<= 2%` para el coste. Esas tolerancias son una admisión de que la
@@ -614,7 +643,11 @@ JSON sin verificar. Es la política, no una preferencia.
 |--------|---------|------------|
 | `response_format` + `stream` no soportado por el provider | Rompe la capa 3 | WU0 lo mide antes de WU8 |
 | El modelo inventa IDs de tarea en `depende_de` | `T3` depende de una tarea inexistente | **No aplica**: el contrato de WU8 es por fases, sin dependencias (§3.3) |
-| `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU9 |
+| `horas` incoherentes con el tamaño de equipo | Estimación absurda | Regla en guardrails de salida, WU9 B |
+| Una regla de inyección rechaza una descripción legítima | Un 422 que el cliente no entiende: tiene que reescribir algo que estaba bien (p. ej. «el motor ignora las reglas anteriores cuando…») | **Sin medir**: los patrones exigen verbo + objeto + «anteriores/previas» y las pruebas incluyen casos normales parecidos. Medir con `entrada_rechazada` (campo `regla`) con tráfico real antes de ampliar patrones |
+| Una inyección que las reglas no ven | Instrucciones del usuario dentro del prompt (otro idioma, otra redacción, letras de otro alfabeto) | **Límite conocido**: las reglas son frases concretas. La defensa de fondo es el schema (la salida se valida) y el guardrail de salida de WU9 B |
+| Datos personales que la regex no reconoce | Nombres propios, direcciones y números con otro formato llegan al proveedor | **Límite conocido**: solo se ocultan email, teléfono, IBAN, tarjeta y documentos con formato. No hay NER. Quien pegue una transcripción con nombres sigue enviándolos |
+| La moderación depende de OpenAI | Sin `OPENAI_API_KEY` no hay moderación; con la cuenta en el tier gratuito hay tope de 250 peticiones por minuto | **Mitigado**: falla abierta con evento, apagada sin clave con evento. No se probó contra la API real (la sesión de desarrollo no tenía clave ni salida a `api.openai.com`): el adaptador se probó contra un transporte HTTP falso con la forma de respuesta de OpenAI. Primera ejecución real: comprobar que `moderacion_no_disponible` no aparece |
 | El total no cuadra con la suma de las fases | Ya ocurrió en la prueba real (29.850 € frente a 29.750 €). En `/estimate` llega así al usuario | **Mitigado en `/estimate/structured`**: se detecta; hasta 5 % llega como aviso y por encima se re-pregunta (§3.3). **Medido** (11 de octubre de 2026, `v4`, 27 ejecuciones): aviso en 23, re-pregunta en 4, y las 4 se corrigieron en el segundo intento. En `/estimate` sigue sin detectarse: el texto no se parsea |
 | La salida estructurada o renderizada no cumple el schema en ningún intento | 502 con `STRUCTURED_MAX_RETRIES + 1` llamadas pagadas | El coste de los intentos queda en el log (`estimacion_fallida`) |
 | El validador de `rendered` rechaza una respuesta correcta | El modelo escribe una cifra en una forma que el validador no acepta (`34 050`, `34k`, `34.050,00`): cada rechazo es un reintento pagado y, si se repite, un 502. Con «Detallado» y narrativa, `rendered` alarga la respuesta y puede acercarse a `LLM_MAX_TOKENS` (4000) | **Medido** (11 de octubre de 2026, `test/medir_v4.py`, `gpt-4o-mini`, los 9 casos × 3 repeticiones): 27 de 27 válidas, ningún rechazo del validador de `rendered` y ninguna respuesta cerca de `LLM_MAX_TOKENS`. Los 4 reintentos fueron por totales desviados más de 5 %, no por `rendered`. Muestra pequeña: no descarta formas de cifra que no aparecieron. Repetir al cambiar de modelo o de prompt (§3.3) |

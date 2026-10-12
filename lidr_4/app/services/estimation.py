@@ -11,24 +11,28 @@ Tres capas, cada una con una sola responsabilidad:
 
 Pipeline de hoy:
 
-1. render del prompt (plantilla versionada);
-2. llamada al wrapper (caché exacta, LLM, validación contra el schema);
-3. eventos y avisos de la estimación (fuera de alcance, totales que no cuadran).
+1. guardrails de entrada (WU9 A, app/services/guardrails.py): rechazan la
+   inyección de prompt y el contenido que marca la moderación, y ocultan los
+   datos personales. Corren antes del render y, por lo tanto, antes de la caché
+   del wrapper: una descripción rechazada no llega al proveedor ni se sirve
+   desde la caché, y el prompt (y su clave de caché) solo ven el texto ya oculto;
+2. render del prompt (plantilla versionada);
+3. llamada al wrapper (caché exacta, LLM, validación contra el schema);
+4. eventos y avisos de la estimación (fuera de alcance, totales que no cuadran).
 
 Dónde entran las etapas que faltan, sin tocar el router ni el wrapper:
 
-- guardrails de entrada (WU9): antes del paso 1, y por lo tanto antes de la caché
-  del wrapper, así una descripción rechazada nunca se sirve desde la caché;
-- caché semántica (WU10): después de los guardrails de entrada y antes del paso 1:
-  se busca por la descripción, así que un acierto ahorra también el render;
-- guardrail de salida (WU9): después del paso 2.
+- caché semántica (WU10): después de los guardrails de entrada y antes del
+  render (paso 2): se busca por la descripción, así que un acierto ahorra también
+  el render;
+- guardrail de salida (WU9 B): después de la llamada (paso 3).
 
 Los errores no se traducen acá. Los del proveedor (`litellm.Timeout`, etc.) y
 `StructuredOutputError` llegan al router tal cual, y él decide el código HTTP y
-qué se deja en el log. Un guardrail que rechace una entrada tendrá su propia
-excepción, y el router la traducirá igual. Un fallo al armar el prompt es un
-error nuestro, no del proveedor: sale como `PromptRenderError`, que el router
-no convierte en 502.
+qué se deja en el log. Un guardrail de entrada que rechaza lanza
+`InputGuardrailViolation`, y el router la traduce a 422. Un fallo al armar el
+prompt es un error nuestro, no del proveedor: sale como `PromptRenderError`, que
+el router no convierte en 502.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from dataclasses import dataclass
 from app.prompts.loader import render_estimation_prompt
 from app.schemas.estimation import EstimationRequest
 from app.schemas.structured_estimation import StructuredResult
+from app.services.guardrails import InputGuardrails
 from app.services.llm_wrapper import LLMWrapper, StructuredCallResult
 from app.tracing import emit
 
@@ -80,11 +85,20 @@ class StructuredEstimation:
 class EstimationService:
     """El pipeline de la estimación. No guarda estado entre llamadas."""
 
-    def __init__(self, llm_wrapper: LLMWrapper) -> None:
+    def __init__(
+        self, llm_wrapper: LLMWrapper, input_guardrails: InputGuardrails | None = None
+    ) -> None:
+        """`input_guardrails=None` corre el pipeline sin reglas de entrada."""
         self._llm_wrapper = llm_wrapper
+        self._input_guardrails = input_guardrails
 
     async def estimate_text(self, request: EstimationRequest, version: str) -> TextEstimation:
         """Estimación en texto libre (prompts de texto: v1, v2)."""
+        # --- Input guardrails -------------------------------------------------------
+        # WU9 A: antes del render y de la llamada, por lo tanto antes de la caché del
+        # wrapper. Un rechazo sale como InputGuardrailViolation, sin pagar nada.
+        request, guardrail_warnings = await self._check_input(request)
+        # ----------------------------------------------------------------------------
         system_prompt, user_prompt = _render(request, version)
         result = await self._llm_wrapper.estimate(
             system_prompt=system_prompt,
@@ -94,7 +108,7 @@ class EstimationService:
         return TextEstimation(
             text=_strip_prompt_tags(result.content),
             prompt_version=result.prompt_version,
-            warnings=list(self._llm_wrapper.warnings),
+            warnings=[*guardrail_warnings, *self._llm_wrapper.warnings],
         )
 
     async def estimate_structured(
@@ -110,12 +124,22 @@ class EstimationService:
         `context` llega a los validadores del schema: en v4, el `output_format`
         de la request.
 
-        Los avisos son los del wrapper (respaldo no disponible) más los totales
-        que no cuadran con la suma de las fases, hasta la tolerancia del schema.
+        Los avisos son los de los guardrails de entrada (datos personales ocultados),
+        los del wrapper (respaldo no disponible) y los totales que no cuadran con la
+        suma de las fases, hasta la tolerancia del schema.
         """
+        # --- Input guardrails -------------------------------------------------------
+        # WU9 A: antes de la caché semántica, del render y de la llamada, y por lo tanto
+        # antes de la caché del wrapper. Un rechazo sale como InputGuardrailViolation,
+        # sin pagar nada. El prompt y la clave de caché ven solo la descripción ya oculta.
+        request, guardrail_warnings = await self._check_input(request)
+        # ----------------------------------------------------------------------------
+
         # --- Semantic cache ---------------------------------------------------------
         # WU10: la búsqueda va acá, antes del render y de la llamada, y después de los
         # guardrails de entrada. Un acierto devuelve la estimación guardada.
+
+        # ----------------------------------------------------------------------------
         system_prompt, user_prompt = _render(request, version)
         result = await self._llm_wrapper.estimate_structured(
             system_prompt=system_prompt,
@@ -125,10 +149,12 @@ class EstimationService:
             context=context,
         )
 
-        # --- Output guardrail -------------------------------------------------------
-        # WU9: la validación de la salida va acá, antes de los eventos y los avisos.
+        # --- Output guardrails ------------------------------------------------------
+        # WU9 B: la validación de la salida va acá, antes de los eventos y los avisos.
         # La escritura en la caché semántica va después de ella: no se guarda una
         # estimación que el guardrail rechazó.
+
+        # ----------------------------------------------------------------------------
         if result.estimation.out_of_scope:
             # No es un fallo: el modelo dijo que la descripción no alcanza. Queda en el
             # log para medir cuántas descripciones llegan sin información suficiente.
@@ -152,8 +178,20 @@ class EstimationService:
             )
 
         return StructuredEstimation(
-            call=result, warnings=[*self._llm_wrapper.warnings, *discrepancies]
+            call=result,
+            warnings=[*guardrail_warnings, *self._llm_wrapper.warnings, *discrepancies],
         )
+
+    async def _check_input(self, request: EstimationRequest) -> tuple[EstimationRequest, list[str]]:
+        """La request con la descripción que pasó los guardrails, y sus avisos."""
+        if self._input_guardrails is None:
+            return request, []
+        checked = await self._input_guardrails.check(request.description)
+        if checked.description == request.description:
+            return request, checked.warnings
+        # model_copy no vuelve a correr los validadores: el texto ocultado puede ser más
+        # corto que el mínimo de la descripción, y eso no es un error del cliente.
+        return request.model_copy(update={"description": checked.description}), checked.warnings
 
 
 def _render(request: EstimationRequest, version: str) -> tuple[str, str]:

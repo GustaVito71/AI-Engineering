@@ -16,13 +16,15 @@ La inteligencia adicional (guardrails, cache semántico) se construye encima de 
 | Contrato de entrada (`EstimationRequest` / `EstimationResponse`) | Hecho (WU2) |
 | Prompts versionados (`system.j2`, `user.j2`, `examples.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
 | Wrapper LLM (`app/services/llm_wrapper.py`), caché, router `POST /api/v1/estimate`, errores y trazabilidad | Hecho (WU5) |
-| Servicio de estimación (`app/services/estimation.py`): el pipeline entre el router y el wrapper, donde entrarán los guardrails de WU9 | Hecho |
+| Servicio de estimación (`app/services/estimation.py`): el pipeline entre el router y el wrapper, donde entran los guardrails | Hecho |
+| Guardrails de entrada (`app/services/guardrails.py`): inyección de prompt, datos personales y moderación de OpenAI, en los tres endpoints | Hecho (WU9 A) |
 | Cliente Streamlit | Hecho (WU6) |
 | Slice de punta a punta: formulario → API → proveedor → caché → formulario | Hecho (WU7) |
 | Salida estructurada: `StructuredResult` con Instructor sobre el Router, prompt `v3`, `POST /api/v1/estimate/structured`, interruptor en el formulario | Hecho, sin streaming (WU8) |
 | Salida renderizada: `RenderedResult` (la presentación de `output_format` en `rendered`, validada contra las cifras), prompt `v4`, `POST /api/v1/estimate/rendered`, segundo interruptor en el formulario | Hecho |
 | Streaming de la salida estructurada (`ijson`, eventos por fase) | Pendiente (WU8) |
-| Guardrails, caché semántico | Pendiente (WU9–WU10) |
+| Guardrail de salida, `IncompleteJSONError` y política de reintento | Pendiente (WU9 B, después del streaming) |
+| Caché semántico | Pendiente (WU10) |
 
 El detalle de cada unidad está en [`PLAN.md`](PLAN.md) §6.
 
@@ -90,6 +92,7 @@ Errores posibles:
 |---|---|---|
 | 422 | La entrada no cumple el contrato (longitud de `description` medida sin los espacios de los extremos, valores de los enums, campos que no están en el contrato) | Lista de errores de validación de Pydantic |
 | 422 | `?prompt_version=` pide una versión que no existe | *"La versión de prompt 'v9' no existe. Versiones disponibles: v1, v2."* |
+| 422 | Un guardrail de entrada rechazó la descripción (instrucciones dirigidas al modelo, o contenido que marca la moderación) | Mensaje fijo por regla, sin repetir lo que escribió el usuario |
 | 503 | Falta la API key del modelo primario | Nombra la variable, por ejemplo *"Falta OPENAI_API_KEY para el modelo primario openai/gpt-4o-mini."* |
 | 504 | El proveedor no respondió a tiempo (agotados los reintentos y el respaldo) | Mensaje genérico en español |
 | 502 | Cualquier otro fallo del proveedor | Mensaje genérico en español |
@@ -206,7 +209,8 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
 - `test/test_frontend.py` — cliente HTTP del formulario con transporte mockeado: el endpoint es `/api/v1/estimate` (no `/stream`), el payload son las cuatro claves del contrato, un 422 de FastAPI llega como lista de `msg`, y los `warnings` de la respuesta llegan al cliente (vacíos si la API no los envía). Versión del prompt: la elegida viaja en `?prompt_version=` y la predeterminada no manda el parámetro; las opciones salen de `/health` y, si la API no responde o es anterior a `prompt_versions`, queda solo la predeterminada.
 - `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_build_payload` + `_estimate`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor). Incluye el selector de versión: las opciones salen del `/health` real y la versión elegida decide el prompt que recibe el proveedor.
 
-- `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos del wrapper con los totales que no cuadran y deja los eventos de negocio, deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor.
+- `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos de los guardrails, los del wrapper y los totales que no cuadran, y deja los eventos de negocio; deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor. Con los guardrails: una descripción rechazada no llega al wrapper (422 en los tres endpoints), el prompt lleva la descripción con los datos personales ocultos, y la app arma los guardrails de la configuración una sola vez.
+- `test/test_guardrails.py` — los guardrails de entrada, sin red ni claves: cada regla de inyección rechaza lo suyo y no una descripción normal (incluye variantes con tildes, mayúsculas, letras de ancho completo y caracteres invisibles), las etiquetas prohibidas cubren las que usan las plantillas, los datos personales se ocultan y las cifras del proyecto no (IBAN, tarjeta y DNI/NIE con su dígito de control), la moderación recibe el texto ya oculto, rechaza lo que marca y falla abierta, ningún evento lleva el texto de la descripción, y el adaptador de OpenAI se prueba contra un transporte HTTP falso. También la configuración: valores por defecto, vacío = no configurado, y qué queda apagado en cada caso.
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `warnings`.
   - **Router y respaldo:** el Router tiene los dos modelos, y si el primario falla responde el de respaldo.
@@ -264,7 +268,8 @@ lidr_4/
 │   │       └── v4/                    # salida estructurada con la presentación de output_format en rendered
 │   └── services/
 │       ├── cache.py                   # Caché exact-match de estimaciones (sobre app/cache.py)
-│       ├── estimation.py              # EstimationService: render del prompt, llamada, eventos y avisos
+│       ├── estimation.py              # EstimationService: guardrails de entrada, render del prompt, llamada, eventos y avisos
+│       ├── guardrails.py              # Guardrails de entrada: inyección, datos personales, moderación
 │       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad; Instructor para la salida estructurada
 ├── test/
 │   ├── conftest.py
@@ -283,6 +288,7 @@ lidr_4/
 │   ├── test_frontend_rendered.py
 │   ├── test_e2e_rendered.py
 │   ├── test_estimation_service.py
+│   ├── test_guardrails.py
 │   ├── test_llm_wrapper.py
 │   ├── test_cache.py
 │   ├── test_estimate_endpoint.py
@@ -336,7 +342,15 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 
 ## Llamada al LLM, caché y trazabilidad
 
-**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: arma el prompt, llama al wrapper y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) habla con el proveedor. Los guardrails de WU9 entrarán en el servicio antes del render, y por lo tanto antes de la caché del wrapper.
+**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: arma el prompt, llama al wrapper y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) habla con el proveedor. Los guardrails de entrada corren en el servicio antes del render, y por lo tanto antes de la caché del wrapper.
+
+**Guardrails de entrada (WU9 A).** Sobre la descripción, en este orden, en los tres endpoints (`app/services/guardrails.py`):
+
+1. **Inyección de prompt** (regex, local): instrucciones dirigidas al modelo («ignora las instrucciones anteriores»), pedidos de revelar el prompt, cambios de rol y etiquetas o marcadores del propio prompt (`</project_description>`). **Rechaza** con 422; la regla que saltó queda en el log.
+2. **Datos personales** (regex y dígitos de control, local): email, teléfono, IBAN, tarjeta (Luhn), DNI/NIE, CUIT/CUIL. **Los oculta** con un marcador (`[EMAIL]`) y la estimación sigue, con un aviso en `warnings`. El prompt, la caché y el log ven solo el texto ya oculto.
+3. **Moderación** de OpenAI (el endpoint no se cobra): se consulta con el texto ya oculto y **rechaza** con 422 lo que marca. Necesita `OPENAI_API_KEY`; sin clave queda apagada y el resto sigue. **Falla abierta**: si OpenAI no responde en `MODERATION_TIMEOUT`, la descripción sigue y queda `moderacion_no_disponible` en el log.
+
+Son heurísticas, no una garantía: una inyección redactada de otra forma o en otro idioma pasa, y una descripción legítima que contenga una frase como «ignora las reglas anteriores» se rechaza. `entrada_rechazada` deja la regla para medir ambos errores. Los límites de cada regla están en el docstring del módulo.
 
 **Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave. Si falta la clave del respaldo, el Router se arma solo con el primario y cada respuesta lleva el aviso en `warnings`.
 
@@ -350,6 +364,10 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 | `estimacion_fallida` | `error` | `codigo_http` (502/504), `tipo_error`, `detalle` (el mensaje real del proveedor). En la salida estructurada y la renderizada, además `salida` (`estructurada` o `renderizada`) y, si ningún intento cumplió el schema, `intentos` y `coste_usd` |
 | `totales_no_cuadran` | `warning` | `prompt_version`, `modelo`, `detalle` (los mismos avisos que recibe el usuario) |
 | `estimacion_fuera_de_alcance` | `info` | `prompt_version`, `modelo`, `confianza_pct`. El modelo rechazó estimar porque la descripción no alcanza |
+| `entrada_rechazada` | `warning` | `regla` (`ignorar_instrucciones`, `revelar_prompt`, `cambio_de_rol`, `etiquetas_del_prompt`, `marcadores_de_rol` o `moderacion`), `longitud` y, en la moderación, `categorias`. Nunca el texto |
+| `datos_personales_ocultados` | `info` | `tipos` (`email`, `telefono`, `iban`, `tarjeta`, `documento`) |
+| `moderacion_no_disponible` | `warning` | `tipo_error`, `detalle`. La moderación falló y la descripción siguió |
+| `moderacion_desactivada` / `guardrails_desactivados` | `warning` | `motivo`. Una vez, al armar los guardrails |
 | `respaldo_no_disponible` | `warning` | `modelo_respaldo`, `detalle` (el mismo aviso que recibe el usuario). Se emite una vez, al construir el wrapper |
 
 `coste_usd` es lo que costó esa request: con acierto de caché vale 0 y lo que costó la respuesta original va a `coste_evitado_usd`. `uso_respaldo` marca las respuestas del modelo de respaldo, que pueden costar bastante más que el primario (PLAN.md §7). Los eventos llevan métricas, nunca el texto del prompt ni la descripción del cliente.
@@ -371,6 +389,10 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `STRUCTURED_PROMPT_VERSION` | `v3` | Versión por defecto de `/estimate/structured`. Tiene que ser de salida estructurada; si no, ese endpoint responde 503 |
 | `STRUCTURED_MAX_RETRIES` | `2` | Veces que se vuelve a preguntar al modelo si la respuesta no cumple el schema. Cada intento se paga. Vale también para `/estimate/rendered` |
 | `RENDERED_PROMPT_VERSION` | `v4` | Versión por defecto de `/estimate/rendered`. Tiene que ser de salida renderizada; si no, ese endpoint responde 503 |
+| `GUARDRAILS_ENABLED` | `true` | `false` apaga todos los guardrails de entrada (deja `guardrails_desactivados` en el log). Para medir sin ellos, no para producción |
+| `MODERATION_ENABLED` | `true` | Moderación de OpenAI. Solo actúa si hay `OPENAI_API_KEY`; sin clave queda apagada y se avisa una vez en el log |
+| `MODERATION_MODEL` | `omni-moderation-latest` | Modelo de moderación |
+| `MODERATION_TIMEOUT` | `3.0` | Segundos que se espera a la moderación (reintentos incluidos). Pasado ese tiempo la descripción sigue |
 | `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada. En Docker lo fija el compose: `redis://redis:6379/0` |
 | `CACHE_TTL` | `86400` | Segundos |
 | `DESCRIPTION_MIN_CHARS` / `DESCRIPTION_MAX_CHARS` | `20` / `2000` | Techo del operador; solo puede estrechar el contrato. Los nombres anteriores, `DESCRIPCION_MIN_CHARS` / `DESCRIPCION_MAX_CHARS`, se siguen leyendo; si están los dos, manda el nuevo |
