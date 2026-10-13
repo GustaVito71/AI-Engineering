@@ -154,6 +154,7 @@ def test_app_opens_a_single_redis_client_and_the_service_uses_it(monkeypatch) ->
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic")
     monkeypatch.setenv("REDIS_URL", REDIS_CAIDO)
+    monkeypatch.setenv("SEMANTIC_CACHE_ENABLED", "false")
     get_settings.cache_clear()
 
     creados: list[Redis] = []

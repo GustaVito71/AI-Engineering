@@ -98,6 +98,7 @@ def stack(monkeypatch, proveedor):
             "OPENAI_API_KEY": "sk-openai",
             "ANTHROPIC_API_KEY": "sk-anthropic",
             "REDIS_URL": "redis://redis-e2e:6379/0",
+            "SEMANTIC_CACHE_ENABLED": "false",
             "LLM_MAX_RETRIES": "0",
         }
         for variable, valor in {**base, **entorno}.items():

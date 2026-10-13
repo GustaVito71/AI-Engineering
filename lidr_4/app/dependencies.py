@@ -29,6 +29,7 @@ from app.guardrails import (
 from app.services.cache import ExactCache, create_estimation_cache
 from app.services.estimation import EstimationService
 from app.services.llm_wrapper import LLMWrapper
+from app.services.semantic_cache import SemanticCache
 
 
 def get_llm_wrapper(request: Request) -> LLMWrapper:
@@ -48,6 +49,14 @@ def get_estimation_cache(request: Request) -> ExactCache:
     return getattr(request.app.state, "estimation_cache", None) or create_estimation_cache(
         None, get_settings().cache_ttl
     )
+
+
+# --- Semantic cache ---------------------------------------------------------
+
+
+def get_semantic_cache(request: Request) -> SemanticCache | None:
+    """La caché semántica del lifespan, o None si está apagada o no hay lifespan."""
+    return getattr(request.app.state, "semantic_cache", None)
 
 
 # --- Input guardrails -------------------------------------------------------
@@ -83,6 +92,7 @@ def get_estimation_service(
     input_guardrails: InputGuardrails | None = Depends(get_input_guardrails),
     cache: ExactCache = Depends(get_estimation_cache),
     output_guardrails: OutputGuardrails | None = Depends(get_output_guardrails),
+    semantic_cache: SemanticCache | None = Depends(get_semantic_cache),
 ) -> EstimationService:
     """El pipeline de la estimación sobre el wrapper, los guardrails y la caché.
 
@@ -90,4 +100,6 @@ def get_estimation_service(
     `get_llm_wrapper`, y por eso un test que reemplaza el wrapper con
     `dependency_overrides` reemplaza también el que usa el servicio.
     """
-    return EstimationService(llm_wrapper, input_guardrails, cache, output_guardrails)
+    return EstimationService(
+        llm_wrapper, input_guardrails, cache, output_guardrails, semantic_cache
+    )

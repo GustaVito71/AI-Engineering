@@ -24,7 +24,7 @@ La inteligencia adicional (guardrails, cache semántico) se construye encima de 
 | Salida renderizada: `RenderedResult` (la presentación de `output_format` en `rendered`, validada contra las cifras), prompt `v4`, `POST /api/v1/estimate/rendered`, segundo interruptor en el formulario | Hecho |
 | Streaming de la salida estructurada (`ijson`, eventos por fase) | Pendiente (WU8) |
 | Guardrail de salida (horas contra el equipo, aviso de confianza baja), `IncompleteJSONError` y política de reintento | Hecho (WU9 B) |
-| Caché semántico | Pendiente (WU10) |
+| Caché semántica (`app/services/semantic_cache.py`): embeddings en Redis plano, umbral, mismas cifras, solo estimaciones sanas, modo `log_only`; opt-in | Hecho (WU10) |
 
 El detalle de cada unidad está en [`PLAN.md`](PLAN.md) §6.
 
@@ -221,6 +221,7 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
   - **Configuración:** reintentos, timeout y `max_tokens` salen de `Settings`.
   - **Coste:** si `completion_cost` falla, el coste es 0 y la respuesta sale igual.
   - **Trazabilidad:** evento `estimacion_completada` en llamada normal, con respaldo y el prompt nunca va al log; el wrapper no guarda caché y siempre llama al proveedor (el evento de los aciertos lo emite el servicio).
+- `test/test_semantic_cache.py` — la caché semántica con fakeredis y embeddings a mano: acierta con lo parecido, no con otro espacio, otro modelo de embeddings, otras cifras ni por debajo del umbral; solo guarda estimaciones sanas; TTL, tope de entradas, `log_only`; fail soft (embedding o Redis caídos, entradas corruptas o de otra dimensión); la configuración; el adaptador de embeddings; y en el servicio, que busca solo si la exacta falló, copia el acierto a la exacta y avisa.
 - `test/test_cache.py` — la caché: ida y vuelta, TTL, clave que cambia con cada parte (modelo, versión, parámetros, descripción), entrada corrupta, Redis caído (lectura, escritura y una estimación completa), caché desactivada, y que la app abra **un solo** cliente de Redis y el wrapper use ese.
 - `test/test_estimate_endpoint.py` — el endpoint con la app real: 200 normal, 503 si falta la clave del primario (sin filtrar la clave configurada), estimación con aviso si falta la del respaldo, `/health` con y sin claves, 502/504 con mensaje limpio ante fallos del proveedor y el detalle en el log; `?prompt_version=` (sin query se usa `PROMPT_VERSION`, la query la pisa, una versión inexistente o con `..` da 422 sin llamar al modelo); `/health` lista las versiones disponibles (`prompt_versions`); una descripción en blanco es 422 sin llamar al modelo, el prompt recibe la descripción recortada y un campo fuera del contrato es 422 en los tres endpoints.
 - **Salida estructurada (WU8):**
@@ -275,6 +276,7 @@ lidr_4/
 │   │   └── detectors.py               # Detectores puros compartidos (normalización, datos personales, prompt volcado)
 │   └── services/
 │       ├── cache.py                   # Caché exact-match (la usa EstimationService; clave sin render)
+│       ├── semantic_cache.py          # Caché semántica: embeddings, Redis plano, coseno en la app (WU10)
 │       ├── estimation.py              # EstimationService: guardrails de entrada, render del prompt, llamada, eventos y avisos
 │       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad; Instructor para la salida estructurada
 ├── test/
@@ -299,6 +301,7 @@ lidr_4/
 │   ├── test_detectors.py
 │   ├── test_llm_wrapper.py
 │   ├── test_cache.py
+│   ├── test_semantic_cache.py
 │   ├── test_estimate_endpoint.py
 │   ├── test_logging.py
 │   ├── test_frontend.py
@@ -350,7 +353,7 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 
 ## Llamada al LLM, caché y trazabilidad
 
-**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: guardrails de entrada → caché exacta → (caché semántica, WU10) → render → LLM → (guardrail de salida, WU9 B) → escritura en las cachés, y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) solo habla con el proveedor: no guarda caché.
+**Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: guardrails de entrada → caché exacta → caché semántica (WU10, opt-in) → render → LLM → guardrails de salida → escritura en las cachés, y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) solo habla con el proveedor: no guarda caché.
 
 **Guardrails de entrada (WU9 A).** Sobre la descripción, en este orden, en los tres endpoints (`app/guardrails/input.py`; los detectores puros están en `app/guardrails/detectors.py`):
 
@@ -371,6 +374,8 @@ Son heurísticas, no una garantía: una inyección redactada de otra forma o en 
 **Política de reintento.** Cada fallo tiene un dueño: una respuesta que no cumple el schema la re-pregunta Instructor (`STRUCTURED_MAX_RETRIES`); un fallo del proveedor lo reintenta el Router y, si no alcanza, responde el respaldo (`LLM_MAX_RETRIES`); una respuesta cortada no se reintenta. Nada se escribe en la caché si no fue una respuesta válida.
 
 **Router con respaldo.** `llm_wrapper.py` arma un Router de LiteLLM con dos deployments, `PRIMARY_MODEL` y `FALLBACK_MODEL`, cada uno con la clave de su proveedor. Las llamadas van al primario; si falla tras `LLM_MAX_RETRIES` reintentos, responde el de respaldo. El Router es el único dueño de reintentos y respaldo (PLAN.md §2). El wrapper se construye en la primera request, no al arrancar, para que el servicio levante aunque falte una clave. Si falta la clave del respaldo, el Router se arma solo con el primario y cada respuesta lleva el aviso en `warnings`.
+
+**Caché semántica (WU10).** Encendida por defecto (`SEMANTIC_CACHE_ENABLED=false` la apaga). Sirve la estimación de una descripción muy parecida a otra ya estimada, sin llamar al modelo. Solo en `/estimate/structured` y `/estimate/rendered`: son las que se validan, y a otras descripciones solo se reparte lo que pasó la validación; `/estimate` (texto libre) usa solo la exacta. Se busca solo si la exacta falló, y un acierto exige tres cosas: el mismo espacio de búsqueda (modelo, versión del prompt, tipo, nivel de detalle y, en v4, formato de salida), una similitud coseno por encima de `CACHE_SEMANTIC_THRESHOLD` y las mismas cifras en la descripción (los embeddings casi no distinguen «20.000 usuarios» de «200.000», y la estimación cambia mucho; «B2B» o «i18n» no cuentan como cifras). **Qué se guarda:** solo estimaciones sanas: no un rechazo, con confianza por encima de `LOW_CONFIDENCE_WARN_PCT` y con los totales cuadrados; una estimación dudosa se devuelve a quien la pidió con su aviso, pero no se reparte a las parecidas. Un acierto se copia a la caché exacta de esa descripción y devuelve un aviso (`Estimación reutilizada de una consulta muy parecida (similitud N %)…`); `estimacion_completada` lleva `tipo_cache=semantica`. Los vectores van en Redis plano (un hash por espacio con el vector normalizado y las cifras, y una clave por estimación), sin RediSearch: la similitud se calcula en la app, y `SEMANTIC_CACHE_MAX_ENTRIES` acota el coste. Cada miss de la exacta paga un embedding antes de llamar al modelo. Fail soft: un fallo del embedding o de Redis es un miss. Eventos: `cache_semantica_acierto`, `cache_semantica_fallo` (con la mejor similitud), `cache_semantica_cifras_distintas`, `cache_semantica_solo_log`, `cache_semantica_no_guardada`, `cache_semantica_no_disponible`, `cache_semantica_activada` y `cache_semantica_desactivada`; ninguno lleva la descripción. **Para encenderla con criterio:** empieza con `SEMANTIC_CACHE_LOG_ONLY=true`, mira las similitudes de `cache_semantica_solo_log` con tráfico real y ajusta el umbral antes de servir aciertos.
 
 **Caché exact-match.** Vive en el servicio y se consulta después de los guardrails y antes del render y de la llamada. La clave es un hash del modelo, la versión del prompt, los parámetros de la request (tipo, nivel de detalle y, en texto y en v4, el formato de salida) y la descripción ya filtrada; no depende del prompt renderizado, porque la búsqueda va antes del render. Las versiones publicadas son inmutables, así que la versión invalida la caché: editar una plantilla sin subir de versión ya no cambia la clave. Un acierto no renderiza, no llama al proveedor y no vuelve a escribir; emite `estimacion_completada` con `desde_cache` y los mismos campos. Una entrada incompleta o que ya no cumple el schema cuenta como fallo y se sobrescribe. Se escribe solo después de una respuesta válida. Hay un único cliente de Redis, el que crea el lifespan (`app/cache.py`), y es el que se cierra al apagar. Si Redis está caído, lento o tiene una entrada corrupta, la estimación sale igual sin caché (fail soft, con timeouts de 1 s).
 
@@ -405,7 +410,7 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `LLM_TIMEOUT` | `30.0` | Segundos por llamada al proveedor |
 | `LLM_MAX_RETRIES` | `2` | Reintentos del Router antes de pasar al respaldo |
 | `LLM_MAX_TOKENS` | `4000` | Tope de tokens de la respuesta |
-| `PROMPT_VERSION` | `v2` | Versión de la plantilla de prompt. Entra en la clave de la caché exacta: es su mecanismo de invalidación (y lo será del semántico en WU10) |
+| `PROMPT_VERSION` | `v2` | Versión de la plantilla de prompt. Entra en la clave de la caché exacta: es su mecanismo de invalidación (y también del semántico: es parte de su espacio de búsqueda) |
 | `STRUCTURED_PROMPT_VERSION` | `v3` | Versión por defecto de `/estimate/structured`. Tiene que ser de salida estructurada; si no, ese endpoint responde 503 |
 | `STRUCTURED_MAX_RETRIES` | `2` | Veces que se vuelve a preguntar al modelo si la respuesta no cumple el schema. Cada intento se paga. Vale también para `/estimate/rendered` |
 | `RENDERED_PROMPT_VERSION` | `v4` | Versión por defecto de `/estimate/rendered`. Tiene que ser de salida renderizada; si no, ese endpoint responde 503 |
@@ -416,7 +421,13 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `MODERATION_MODEL` | `omni-moderation-latest` | Modelo de moderación |
 | `MODERATION_TIMEOUT` | `3.0` | Segundos que se espera a la moderación (reintentos incluidos). Pasado ese tiempo la descripción sigue |
 | `REDIS_URL` | `redis://localhost:6379/0` | Vacío = caché desactivada. En Docker lo fija el compose: `redis://redis:6379/0` |
-| `CACHE_TTL` | `86400` | Segundos |
+| `CACHE_TTL` | `86400` | Segundos (también de la caché semántica) |
+| `SEMANTIC_CACHE_ENABLED` | `true` | Caché semántica. Necesita Redis y `OPENAI_API_KEY` (clave del proveedor del modelo de embeddings); sin alguno queda apagada con un aviso en el log |
+| `CACHE_SEMANTIC_THRESHOLD` | `0.95` | Similitud coseno mínima, en (0, 1]. Más alto = más estricto |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Modelo de embeddings (LiteLLM) |
+| `EMBEDDING_TIMEOUT` | `3.0` | Segundos que se espera al embedding; pasado ese tiempo, la búsqueda cuenta como miss |
+| `SEMANTIC_CACHE_LOG_ONLY` | `false` | Busca y deja la similitud en el log, pero nunca sirve un acierto: para calibrar el umbral |
+| `SEMANTIC_CACHE_MAX_ENTRIES` | `200` | Entradas por espacio de búsqueda; se desaloja la más antigua. La similitud se calcula en la app y su coste crece con este número |
 | `DESCRIPTION_MIN_CHARS` / `DESCRIPTION_MAX_CHARS` | `20` / `2000` | Techo del operador; solo puede estrechar el contrato. Los nombres anteriores, `DESCRIPCION_MIN_CHARS` / `DESCRIPCION_MAX_CHARS`, se siguen leyendo; si están los dos, manda el nuevo |
 | `APP_ENV` | `local` | Se muestra en `/health` |
 | `LOG_LEVEL` | `INFO` | Nivel de los logs propios. Las librerías HTTP, el SDK, LiteLLM e Instructor quedan fijas en `WARNING`: ningún nivel escribe el prompt |

@@ -29,6 +29,7 @@ from .prompts.loader import OUTPUT_RENDERED, OUTPUT_STRUCTURED, available_versio
 from .routers.estimations import router as estimations_router
 from .services.cache import create_estimation_cache
 from .services.llm_wrapper import fallback_warning
+from .services.semantic_cache import create_semantic_cache
 
 # Loggers propios de LiteLLM (los nombres llevan mayúsculas y espacios). En DEBUG
 # escriben los parámetros completos de cada llamada, incluidos los mensajes: el
@@ -144,6 +145,7 @@ async def lifespan(app: FastAPI):
     redis_client = await create_cache_client(settings)
     app.state.cache_client = redis_client
     app.state.estimation_cache = create_estimation_cache(redis_client, settings.cache_ttl)
+    app.state.semantic_cache = create_semantic_cache(settings, redis_client)
     try:
         yield
     finally:

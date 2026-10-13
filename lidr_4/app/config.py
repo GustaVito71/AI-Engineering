@@ -102,6 +102,25 @@ def _empty_is_default_confidence(value: object) -> object:
     return DEFAULT_LOW_CONFIDENCE_WARN_PCT if value == "" else value
 
 
+# --- Caché semántica (WU10) ---------------------------------------------------
+DEFAULT_SEMANTIC_THRESHOLD = 0.95
+DEFAULT_SEMANTIC_MAX_ENTRIES = 200
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+def _empty_is_false(value: object) -> object:
+    """Vacío = "no configurado" = apagado: la caché semántica es opt-in."""
+    return False if value == "" else value
+
+
+def _empty_is_default_threshold(value: object) -> object:
+    return DEFAULT_SEMANTIC_THRESHOLD if value == "" else value
+
+
+def _empty_is_default_max_entries(value: object) -> object:
+    return DEFAULT_SEMANTIC_MAX_ENTRIES if value == "" else value
+
+
 # El contrato de `description` vive en el Field de
 # app.schemas.estimation.EstimationRequest. Se replica acá porqueSettings no
 # puede importar al schema (sería un ciclo: el schema importa get_settings) y
@@ -224,6 +243,29 @@ class Settings(BaseSettings):
     # estimación se devuelve con un aviso. 0 desactiva solo este aviso.
     low_confidence_warn_pct: Annotated[int, BeforeValidator(_empty_is_default_confidence)] = (
         DEFAULT_LOW_CONFIDENCE_WARN_PCT
+    )
+
+    # --- Caché semántica (WU10) ---------------------------------------------------
+    # Sirve la estimación de una descripción muy parecida a otra ya estimada, sin llamar
+    # al modelo (app/services/semantic_cache.py). Apagada por defecto: devuelve la
+    # estimación de OTRA descripción, y eso es una decisión del operador. Necesita
+    # Redis (REDIS_URL) y la clave del proveedor del modelo de embeddings (OpenAI para
+    # el de por defecto); sin alguno de los dos queda apagada con un evento en el log.
+    semantic_cache_enabled: Annotated[bool, BeforeValidator(_empty_is_true)] = True
+    # Similitud coseno mínima, en (0, 1]. Más alto = más estricto. 0.95 es el piso sin falsos
+    # aciertos medidos con test/calibrar_cache.py (a 0.92 «con y sin pagos» acertaba).
+    cache_semantic_threshold: Annotated[float, BeforeValidator(_empty_is_default_threshold)] = (
+        DEFAULT_SEMANTIC_THRESHOLD
+    )
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL
+    embedding_timeout: float = 3.0
+    # Con SEMANTIC_CACHE_LOG_ONLY=true busca y deja la similitud en el log, pero nunca
+    # sirve un acierto: sirve para calibrar el umbral con tráfico real antes de encenderla.
+    semantic_cache_log_only: Annotated[bool, BeforeValidator(_empty_is_false)] = False
+    # Tope de entradas por espacio de búsqueda (modelo, versión, parámetros): la
+    # similitud se calcula en la app, y el coste de cada búsqueda crece con este número.
+    semantic_cache_max_entries: Annotated[int, BeforeValidator(_empty_is_default_max_entries)] = (
+        DEFAULT_SEMANTIC_MAX_ENTRIES
     )
 
     # --- Frontend. URL base del API para Streamlit (cliente HTTP separado).
@@ -350,6 +392,27 @@ class Settings(BaseSettings):
                 f"LOW_CONFIDENCE_WARN_PCT={self.low_confidence_warn_pct} tiene que estar "
                 "entre 0 y 100."
             )
+        return self
+
+    # --- Caché semántica -------------------------------------------------------
+    @model_validator(mode="after")
+    def validate_semantic_cache(self) -> "Settings":
+        """Un umbral fuera de (0, 1] o un tope sin entradas no son una caché: romper al arrancar."""
+        if not 0 < self.cache_semantic_threshold <= 1:
+            raise ValueError(
+                f"CACHE_SEMANTIC_THRESHOLD={self.cache_semantic_threshold} tiene que estar "
+                "en (0, 1]."
+            )
+        if self.embedding_timeout <= 0:
+            raise ValueError(
+                f"EMBEDDING_TIMEOUT={self.embedding_timeout} tiene que ser mayor que cero."
+            )
+        if self.semantic_cache_max_entries < 1:
+            raise ValueError(
+                f"SEMANTIC_CACHE_MAX_ENTRIES={self.semantic_cache_max_entries} tiene que ser "
+                "al menos 1."
+            )
+        self.embedding_model = self.embedding_model or DEFAULT_EMBEDDING_MODEL
         return self
 
     @property

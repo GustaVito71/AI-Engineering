@@ -21,8 +21,10 @@ Pipeline, en este orden:
 2. caché exacta (app/services/cache.py): la clave es un hash del modelo, la
    versión del prompt, los parámetros de la request y la descripción filtrada.
    No incluye el prompt renderizado, así que se consulta antes de armarlo;
-3. caché semántica (WU10, todavía no existe): solo si la exacta no acertó, porque
-   necesita un embedding. Se busca por la descripción;
+3. caché semántica (WU10, app/services/semantic_cache.py, opt-in): solo si la exacta
+   no acertó, porque necesita un embedding, y solo en la salida estructurada y la
+   renderizada. Acierta con una descripción muy parecida del mismo espacio de búsqueda
+   y con las mismas cifras; el acierto se copia a la exacta y lleva un aviso al usuario;
 4. render del prompt (plantilla versionada);
 5. llamada al wrapper (LLM, validación contra el schema);
 6. guardrail de salida (WU9 B): lo que rechaza vive en el schema y lo valida el
@@ -48,6 +50,7 @@ Redis falla, la consulta es un fallo de caché y la escritura se omite.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -64,6 +67,7 @@ from app.services.llm_wrapper import (
     emit_completion,
     output_label,
 )
+from app.services.semantic_cache import SemanticCache, SemanticLookup
 
 # Los ejemplos del prompt envuelven cada estimación en <estimation>…</estimation>,
 # y el modelo a veces copia esas etiquetas en su respuesta. Son estructura del
@@ -109,14 +113,18 @@ class EstimationService:
         input_guardrails: InputGuardrails | None = None,
         cache: ExactCache | None = None,
         output_guardrails: OutputGuardrails | None = None,
+        semantic_cache: SemanticCache | None = None,
     ) -> None:
         """Sin `input_guardrails` corre sin reglas de entrada; sin `cache`, sin caché; sin
         `output_guardrails`, sin avisos ni eventos sobre la estimación (las reglas del
-        schema que rechazan corren igual: viven en el wrapper)."""
+        schema que rechazan corren igual: viven en el wrapper); sin `semantic_cache`, solo la
+        exacta. La semántica solo se usa en la salida estructurada y la renderizada: son las
+        que se validan, y solo se reparte a otras descripciones lo que pasó la validación."""
         self._llm_wrapper = llm_wrapper
         self._input_guardrails = input_guardrails
         self._output_guardrails = output_guardrails
         self._cache = cache if cache is not None else create_estimation_cache(None, 0)
+        self._semantic_cache = semantic_cache
 
     async def estimate_text(self, request: EstimationRequest, version: str) -> TextEstimation:
         """Estimación en texto libre (prompts de texto: v1, v2)."""
@@ -171,12 +179,23 @@ class EstimationService:
         start = time.perf_counter()
         cache_key = self._exact_key(request, version, response_model=response_model)
         result = await self._cached_structured(cache_key, version, response_model, context, start)
-        if result is None:
+        semantic_warnings: list[str] = []
+        namespace = self._namespace(request, version, response_model)
+        lookup = SemanticLookup()
+        if result is None and self._semantic_cache is not None:
             # --- Semantic cache -----------------------------------------------------
-            # WU10: la búsqueda va acá, solo si la exacta no acertó, antes del render y
-            # de la llamada. Un acierto devuelve la estimación guardada.
-
+            # WU10: solo si la exacta no acertó, antes del render y de la llamada. Un
+            # acierto devuelve la estimación guardada para la descripción parecida y la
+            # copia a la caché exacta de esta, para que la próxima vez no pague el embedding.
+            lookup = await self._semantic_cache.lookup(namespace, request.description)
+            result = self._structured_from_entry(
+                lookup.entry, version, response_model, context, start, tipo_cache="semantica"
+            )
+            if result is not None:
+                await self._cache.set(cache_key, lookup.entry)
+                semantic_warnings.append(_semantic_warning(lookup.similarity))
             # ------------------------------------------------------------------------
+        if result is None:
             system_prompt, user_prompt = _render(request, version)
             result = await self._llm_wrapper.estimate_structured(
                 system_prompt=system_prompt,
@@ -198,7 +217,12 @@ class EstimationService:
             # sin re-preguntar, antes de escribir en las cachés.
             self._inspect_estimation(result, version)
             # ------------------------------------------------------------------------
-            await self._cache.set(cache_key, _cache_entry(result))
+            entry = _cache_entry(result)
+            await self._cache.set(cache_key, entry)
+            if self._semantic_cache is not None:
+                await self._semantic_cache.store(
+                    namespace, request.description, lookup, entry, result.estimation
+                )
 
         output_warnings = (
             self._output_guardrails.check(
@@ -213,6 +237,7 @@ class EstimationService:
             warnings=[
                 *guardrail_warnings,
                 *self._llm_wrapper.warnings,
+                *semantic_warnings,
                 *output_warnings,
             ],
         )
@@ -254,15 +279,34 @@ class EstimationService:
         cambia la respuesta (PLAN.md §3.3), así que no entra a la clave: pedir la misma
         estimación con otro formato es un acierto. En el texto y en la renderizada sí.
         """
-        uses_format = response_model is None or issubclass(response_model, RenderedResult)
         return self._cache.make_key(
+            *self._key_parts(request, version, response_model), request.description
+        )
+
+    def _key_parts(
+        self,
+        request: EstimationRequest,
+        version: str,
+        response_model: type[StructuredResult] | None,
+    ) -> tuple[str, ...]:
+        """Todo lo que determina la respuesta salvo la descripción: modelo, versión y parámetros."""
+        uses_format = response_model is None or issubclass(response_model, RenderedResult)
+        return (
             self._llm_wrapper.primary_model,
             version,
             request.project_type.value,
             request.detail_level.value,
             request.output_format.value if uses_format else "",
-            request.description,
         )
+
+    def _namespace(
+        self,
+        request: EstimationRequest,
+        version: str,
+        response_model: type[StructuredResult] | None,
+    ) -> str:
+        """El espacio de la caché semántica: las mismas partes que la clave exacta, sin la descripción."""
+        return json.dumps(self._key_parts(request, version, response_model), ensure_ascii=False)
 
     async def _cached_text(
         self, cache_key: str, version: str, start: float
@@ -289,6 +333,21 @@ class EstimationService:
         como un fallo de caché: se vuelve a pedir y se sobrescribe.
         """
         entry = await self._cache.get(cache_key)
+        return self._structured_from_entry(entry, version, response_model, context, start)
+
+    def _structured_from_entry(
+        self,
+        entry: dict | None,
+        version: str,
+        response_model: type[StructuredResult],
+        context: dict | None,
+        start: float,
+        **extra: object,
+    ) -> StructuredCallResult | None:
+        """El resultado de una entrada de caché (exacta o semántica), o None si no sirve.
+
+        `extra` va al evento `estimacion_completada` (`tipo_cache` en un acierto semántico).
+        """
         if not _is_valid_entry(entry):
             return None
         try:
@@ -308,6 +367,7 @@ class EstimationService:
             primary_model=self._llm_wrapper.primary_model,
             salida=output_label(response_model),
             intentos=0,
+            **extra,
         )
         return result
 
@@ -336,6 +396,14 @@ def _render(request: EstimationRequest, version: str) -> tuple[str, str]:
         raise PromptRenderError(
             f"No se pudo armar el prompt {version}: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+def _semantic_warning(similarity: float | None) -> str:
+    pct = round((similarity or 0) * 100)
+    return (
+        f"Estimación reutilizada de una consulta muy parecida (similitud {pct} %). "
+        "Para una estimación nueva, cambia la descripción."
+    )
 
 
 def _strip_prompt_tags(text: str) -> str:
