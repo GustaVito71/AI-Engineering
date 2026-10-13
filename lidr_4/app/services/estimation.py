@@ -135,6 +135,7 @@ class EstimationService:
                 user_prompt=user_prompt,
                 prompt_version=version,
             )
+            self._inspect_text(result, version)
             await self._cache.set(cache_key, _cache_entry(result))
         return TextEstimation(
             text=_strip_prompt_tags(result.content),
@@ -193,6 +194,9 @@ class EstimationService:
             # que el guardrail rechazó. Los avisos (`OutputGuardrails`) se calculan
             # después, para que valgan también cuando la estimación sale de la caché.
 
+            # Datos personales y prompt volcado (`inspect_estimation`): se descartan
+            # sin re-preguntar, antes de escribir en las cachés.
+            self._inspect_estimation(result, version)
             # ------------------------------------------------------------------------
             await self._cache.set(cache_key, _cache_entry(result))
 
@@ -212,6 +216,18 @@ class EstimationService:
                 *output_warnings,
             ],
         )
+
+    def _inspect_text(self, result: LLMCallResult, version: str) -> None:
+        if self._output_guardrails is not None:
+            self._output_guardrails.inspect_text(
+                result.content, prompt_version=version, model=result.model
+            )
+
+    def _inspect_estimation(self, result: StructuredCallResult, version: str) -> None:
+        if self._output_guardrails is not None:
+            self._output_guardrails.inspect_estimation(
+                result.estimation, prompt_version=version, model=result.model
+            )
 
     async def _check_input(self, request: EstimationRequest) -> tuple[EstimationRequest, list[str]]:
         """La request con la descripción que pasó los guardrails, y sus avisos."""

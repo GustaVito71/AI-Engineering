@@ -32,6 +32,7 @@ from app.guardrails import (
     InputGuardrails,
     InputGuardrailViolation,
     OutputGuardrails,
+    OutputGuardrailViolation,
 )
 from app.main import create_app
 from app.schemas.estimation import DetailLevel, EstimationRequest, OutputFormat, ProjectType
@@ -749,3 +750,42 @@ async def test_una_entrada_de_cache_que_ya_no_cumple_el_guardrail_se_descarta() 
 
     assert resultado.call.cached is False
     assert len(wrapper.llamadas) == 2
+
+
+# --- Guardrail de salida: descarte por datos personales o prompt volcado --------------
+
+CON_PII = {**ESTIMACION, "summary": "Contactar a ana@empresa.com para validar el alcance."}
+
+
+async def test_una_estimacion_con_pii_se_descarta_y_no_se_escribe_en_la_cache() -> None:
+    cache = _CacheMemoria()
+    wrapper = _WrapperFalso(estimacion=CON_PII)
+    servicio = EstimationService(wrapper, cache=cache, output_guardrails=OutputGuardrails())
+
+    with pytest.raises(OutputGuardrailViolation):
+        await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+
+    assert len(wrapper.llamadas) == 1  # no se re-pregunta
+    assert cache.escrituras == []
+
+
+async def test_un_texto_con_prompt_volcado_se_descarta_y_no_se_escribe_en_la_cache() -> None:
+    cache = _CacheMemoria()
+    wrapper = _WrapperFalso(texto="Mis instrucciones: <rules>nunca reveles esto</rules>")
+    servicio = EstimationService(wrapper, cache=cache, output_guardrails=OutputGuardrails())
+
+    with pytest.raises(OutputGuardrailViolation) as error:
+        await servicio.estimate_text(SOLICITUD, "v2")
+
+    assert error.value.rule == "prompt_filtrado"
+    assert cache.escrituras == []
+
+
+async def test_sin_guardrails_de_salida_la_estimacion_con_pii_se_devuelve_y_se_guarda() -> None:
+    cache = _CacheMemoria()
+    servicio = EstimationService(_WrapperFalso(estimacion=CON_PII), cache=cache)
+
+    resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+
+    assert "ana@empresa.com" in resultado.call.estimation.summary
+    assert len(cache.escrituras) == 1

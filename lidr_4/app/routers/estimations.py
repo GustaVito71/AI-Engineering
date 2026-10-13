@@ -41,7 +41,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import LLMConfigurationError, get_settings
 from app.dependencies import get_estimation_service
-from app.guardrails import InputGuardrailViolation
+from app.guardrails import InputGuardrailViolation, OutputGuardrailViolation
 from app.prompts.loader import (
     OUTPUT_RENDERED,
     OUTPUT_STRUCTURED,
@@ -111,6 +111,9 @@ async def estimate(
     except InputGuardrailViolation as exc:
         # El cliente tiene que reescribir la descripción: 422, no un fallo del proveedor.
         raise HTTPException(status_code=422, detail=exc.message) from None
+    except OutputGuardrailViolation as exc:
+        _log_failure(exc, status.HTTP_502_BAD_GATEWAY, regla=exc.rule)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from None
     except litellm.Timeout as exc:
         # Timeout es subclase de APIConnectionError: tiene que ir antes que el
         # caso general para que no lo capture el 502.
@@ -283,6 +286,11 @@ async def _estimate_validated(
     except InputGuardrailViolation as exc:
         # El cliente tiene que reescribir la descripción: 422, no un fallo del proveedor.
         raise HTTPException(status_code=422, detail=exc.message) from None
+    except OutputGuardrailViolation as exc:
+        # La respuesta se descartó por datos personales o prompt volcado: 502 con
+        # mensaje fijo. El evento `salida_rechazada` ya dejó la regla.
+        _log_failure(exc, status.HTTP_502_BAD_GATEWAY, salida=output_label, regla=exc.rule)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message) from None
     except StructuredOutputError as exc:
         # La respuesta llegó pero no sirve: es un fallo del proveedor visto
         # desde el cliente (502), con su propio mensaje. Los intentos ya se

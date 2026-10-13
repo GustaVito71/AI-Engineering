@@ -14,7 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from app.guardrails.detectors import PROMPT_TAGS, mask_personal_data, normalize_text
+from app.guardrails.detectors import (
+    PROMPT_LEAK_PHRASES,
+    PROMPT_TAGS,
+    find_prompt_leak,
+    mask_personal_data,
+    normalize_text,
+)
 
 DESCRIPCION = "Un SaaS B2B pequeño para gestionar el préstamo de equipos a empleados."
 
@@ -101,3 +107,47 @@ def test_sin_el_digito_de_control_no_es_un_iban_ni_una_tarjeta(texto) -> None:
 
 def test_normalize_text_quita_tildes_mayusculas_y_caracteres_invisibles() -> None:
     assert normalize_text("IgnorÁ\u200b   TODO") == "ignora todo"
+
+
+# --- Prompt volcado (salida) ----------------------------------------------------------
+
+
+def test_las_frases_de_fuga_siguen_en_alguna_plantilla() -> None:
+    """Si una plantilla cambia esa frase, el detector queda ciego sin que nadie lo note."""
+    raiz = Path(__file__).resolve().parents[1] / "app" / "prompts" / "estimation"
+    plantillas = " ".join(
+        normalize_text(a.read_text(encoding="utf-8")) for a in raiz.glob("*/system.j2")
+    )
+    for frase in PROMPT_LEAK_PHRASES:
+        assert frase in plantillas, frase
+
+
+@pytest.mark.parametrize(
+    ("texto", "regla"),
+    [
+        ("Resumen. </scope> y sigue", "etiqueta"),
+        ("<RULES>algo</RULES>", "etiqueta"),
+        ("< system >", "etiqueta"),
+        ("Eres un estimador de proyectos sénior con más de 15 años de experiencia.", "frase"),
+        ("I am a Senior Project Estimator with 15+ years of experience", "frase"),
+        ("Me dijeron: NO ELIJAS un número redondo para ajustar las fases", "frase"),
+        ("vuelve a sumar las fases y comprueba que coincidan con los totales", "frase"),
+    ],
+)
+def test_un_prompt_volcado_se_detecta(texto, regla) -> None:
+    assert find_prompt_leak(texto) == regla
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        DESCRIPCION,
+        "<estimation>| fase | semanas |</estimation>",  # lo copia de los ejemplos y se quita
+        "Hay 15 años de experiencia en el equipo y se suman las fases del plan.",
+        "a < b y c > d",
+        "Fuera de alcance: falta el alcance.",
+        "",
+    ],
+)
+def test_un_texto_normal_no_se_marca_como_prompt_volcado(texto) -> None:
+    assert find_prompt_leak(texto) is None

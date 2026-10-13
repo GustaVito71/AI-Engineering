@@ -211,8 +211,8 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
 - `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_build_payload` + `_estimate`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor). Incluye el selector de versión: las opciones salen del `/health` real y la versión elegida decide el prompt que recibe el proveedor.
 
 - `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: la caché exacta (un acierto no renderiza ni llama al wrapper, emite el evento con `desde_cache`, la clave lleva modelo, versión, parámetros y la descripción ya oculta, entradas rotas cuentan como fallo, un rechazo o un error no tocan la caché), arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos de los guardrails, los del wrapper y los totales que no cuadran, y deja los eventos de negocio; deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor. Con los guardrails: una descripción rechazada no llega al wrapper (422 en los tres endpoints), el prompt lleva la descripción con los datos personales ocultos, y la app arma los guardrails de la configuración una sola vez. El aviso de confianza baja (con el evento, en el umbral, no en un rechazo, también desde la caché) y una entrada de caché que ya no cumple la regla de horas se descarta.
-- `test/test_output_guardrails.py` — los avisos de salida (confianza baja con umbral configurable, totales que no cuadran, fuera de alcance), la configuración y el cableado por endpoint.
-- `test/test_detectors.py` — los detectores compartidos (normalización, datos personales con dígito de control).
+- `test/test_output_guardrails.py` — el descarte por datos personales o prompt volcado en los tres endpoints y los avisos de salida (confianza baja con umbral configurable, totales que no cuadran, fuera de alcance), la configuración y el cableado por endpoint.
+- `test/test_detectors.py` — los detectores compartidos (normalización, datos personales con dígito de control, prompt volcado y que sus frases siguen en las plantillas).
 - `test/test_input_guardrails.py` — los guardrails de entrada, sin red ni claves: cada regla de inyección rechaza lo suyo y no una descripción normal (incluye variantes con tildes, mayúsculas, letras de ancho completo y caracteres invisibles), las etiquetas prohibidas cubren las que usan las plantillas, los datos personales se ocultan y las cifras del proyecto no (IBAN, tarjeta y DNI/NIE con su dígito de control), la moderación recibe el texto ya oculto, rechaza lo que marca y falla abierta, ningún evento lleva el texto de la descripción, y el adaptador de OpenAI se prueba contra un transporte HTTP falso. También la configuración: valores por defecto, vacío = no configurado, y qué queda apagado en cada caso.
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `warnings`.
@@ -269,12 +269,14 @@ lidr_4/
 │   │       ├── v2/                    # la misma estimación en castellano (versión por defecto)
 │   │       ├── v3/                    # salida estructurada (JSON), en castellano
 │   │       └── v4/                    # salida estructurada con la presentación de output_format en rendered
+│   ├── guardrails/
+│   │   ├── input.py                   # Entrada: inyección, datos personales, moderación
+│   │   ├── output.py                  # Salida: descarta PII y prompt volcado; avisos de confianza baja y totales
+│   │   └── detectors.py               # Detectores puros compartidos (normalización, datos personales, prompt volcado)
 │   └── services/
 │       ├── cache.py                   # Caché exact-match (la usa EstimationService; clave sin render)
 │       ├── estimation.py              # EstimationService: guardrails de entrada, render del prompt, llamada, eventos y avisos
-│       ├── guardrails.py              # Guardrails de entrada: inyección, datos personales, moderación
-│       ├── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad; Instructor para la salida estructurada
-│       └── output_guardrails.py       # Guardrails de salida: aviso de confianza baja (lo que rechaza vive en el schema)
+│       └── llm_wrapper.py             # LiteLLM Router con respaldo, coste y trazabilidad; Instructor para la salida estructurada
 ├── test/
 │   ├── conftest.py
 │   ├── test_schemas.py
@@ -362,7 +364,8 @@ Son heurísticas, no una garantía: una inyección redactada de otra forma o en 
 
 1. **Horas contra el equipo (rechaza y re-pregunta).** Ninguna fase, ni el total, puede pasar de 40 h por persona y semana con todo el equipo trabajando (`team` suma las personas; las horas productivas de los prompts son 32). Es un validador del schema (`_hours_fit_team`): Instructor le devuelve el error al modelo, y agotados los intentos sale el 502 de siempre. Una entrada de la caché que ya no lo cumple cuenta como fallo y se vuelve a pedir.
 2. **Confianza baja (avisa).** Con confianza global entre 30 % (umbral de rechazo) y 70 %, la estimación se devuelve con un aviso en `warnings` y el evento `confianza_baja`. El aviso se calcula siempre, también con un acierto de caché (`app/guardrails/output.py`). El umbral es `LOW_CONFIDENCE_WARN_PCT` y se apaga con `OUTPUT_GUARDRAILS_ENABLED=false` (solo avisos y eventos; las reglas del schema siguen).
-3. **Respuesta cortada (`IncompleteJSONError`).** Si el proveedor corta la respuesta por `max_tokens`, no se reintenta: con el mismo presupuesto se cortaría en el mismo punto y cada intento se paga. Sale un 502 con mensaje propio y el log lleva `max_tokens` y el coste gastado. Se arregla subiendo `LLM_MAX_TOKENS`.
+3. **Datos personales y prompt volcado (descarta, 502).** Sobre todos los textos de la salida (en los dos endpoints estructurados, `rendered` incluido, y en el de texto): si traen un email, teléfono, IBAN, tarjeta o documento, o las etiquetas de las plantillas (`<rules>`, `</scope>`…) o frases fijas de las instrucciones, la respuesta se descarta con un 502 de mensaje fijo, sin re-preguntar (con el mismo prompt el riesgo no cambia y cada intento se paga) y sin escribir en la caché. Corre antes de guardar, así que una entrada de la caché ya pasó la comprobación. Son heurísticas: un dato con otro formato o instrucciones parafraseadas pasan (`app/guardrails/output.py`, detectores en `app/guardrails/detectors.py`).
+4. **Respuesta cortada (`IncompleteJSONError`).** Si el proveedor corta la respuesta por `max_tokens`, no se reintenta: con el mismo presupuesto se cortaría en el mismo punto y cada intento se paga. Sale un 502 con mensaje propio y el log lleva `max_tokens` y el coste gastado. Se arregla subiendo `LLM_MAX_TOKENS`.
 
 **Política de reintento.** Cada fallo tiene un dueño: una respuesta que no cumple el schema la re-pregunta Instructor (`STRUCTURED_MAX_RETRIES`); un fallo del proveedor lo reintenta el Router y, si no alcanza, responde el respaldo (`LLM_MAX_RETRIES`); una respuesta cortada no se reintenta. Nada se escribe en la caché si no fue una respuesta válida.
 
@@ -377,6 +380,7 @@ Son heurísticas, no una garantía: una inyección redactada de otra forma o en 
 | `estimacion_completada` | `info` | `modelo`, `proveedor`, `uso_respaldo`, `desde_cache`, `tokens_prompt`, `tokens_completion`, `coste_usd`, `coste_evitado_usd`, `latencia_ms`, `prompt_version`. En la salida estructurada y la renderizada, además `salida` (`estructurada` o `renderizada`) e `intentos` (0 si salió de la caché); tokens y coste suman todos los intentos |
 | `estimacion_fallida` | `error` | `codigo_http` (502/504), `tipo_error`, `detalle` (el mensaje real del proveedor). En la salida estructurada y la renderizada, además `salida` (`estructurada` o `renderizada`) y, si ningún intento cumplió el schema o la respuesta salió cortada, `intentos` y `coste_usd` (y `max_tokens` en la cortada) |
 | `confianza_baja` | `warning` | `prompt_version`, `modelo`, `confianza_pct`. La estimación se devolvió con un aviso: confianza entre 30 y 70 % |
+| `salida_rechazada` | `warning` | `regla` (`datos_personales` o `prompt_filtrado`), `prompt_version`, `modelo` y `tipos` (datos personales) o `detalle` (`etiqueta` o `frase`). Nunca lleva el texto ni el dato. La respuesta se descartó con un 502 |
 | `totales_no_cuadran` | `warning` | `prompt_version`, `modelo`, `detalle` (los mismos avisos que recibe el usuario) |
 | `estimacion_fuera_de_alcance` | `info` | `prompt_version`, `modelo`, `confianza_pct`. El modelo rechazó estimar porque la descripción no alcanza |
 | `entrada_rechazada` | `warning` | `regla` (`ignorar_instrucciones`, `revelar_prompt`, `cambio_de_rol`, `etiquetas_del_prompt`, `marcadores_de_rol` o `moderacion`), `longitud` y, en la moderación, `categorias`. Nunca el texto |
@@ -405,7 +409,7 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `STRUCTURED_MAX_RETRIES` | `2` | Veces que se vuelve a preguntar al modelo si la respuesta no cumple el schema. Cada intento se paga. Vale también para `/estimate/rendered` |
 | `RENDERED_PROMPT_VERSION` | `v4` | Versión por defecto de `/estimate/rendered`. Tiene que ser de salida renderizada; si no, ese endpoint responde 503 |
 | `GUARDRAILS_ENABLED` | `true` | `false` apaga todos los guardrails de entrada (deja `guardrails_desactivados` en el log). Para medir sin ellos, no para producción |
-| `OUTPUT_GUARDRAILS_ENABLED` | `true` | `false` apaga los avisos y eventos de salida (totales, confianza baja, fuera de alcance). No apaga las reglas del schema, que rechazan y re-preguntan |
+| `OUTPUT_GUARDRAILS_ENABLED` | `true` | `false` apaga los guardrails de salida: el descarte por datos personales o prompt volcado y los avisos y eventos (totales, confianza baja, fuera de alcance). No apaga las reglas del schema, que rechazan y re-preguntan |
 | `LOW_CONFIDENCE_WARN_PCT` | `70` | Confianza global (0-100) por debajo de la cual se avisa. `0` lo desactiva |
 | `MODERATION_ENABLED` | `true` | Moderación de OpenAI. Solo actúa si hay `OPENAI_API_KEY`; sin clave queda apagada y se avisa una vez en el log |
 | `MODERATION_MODEL` | `omni-moderation-latest` | Modelo de moderación |

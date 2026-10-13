@@ -7,6 +7,7 @@ lo que escribe el modelo.
 
 - `normalize_text`: minúsculas, sin tildes ni caracteres invisibles.
 - `PROMPT_TAGS`: las etiquetas de las plantillas de prompt.
+- `find_prompt_leak`: si un texto vuelca partes del prompt de sistema (salida).
 - `mask_personal_data`: oculta email, teléfono, IBAN, tarjeta y documentos.
 """
 
@@ -51,6 +52,37 @@ def normalize_text(text: str) -> str:
         c for c in decomposed if not unicodedata.combining(c) and unicodedata.category(c) != "Cf"
     )
     return re.sub(r"\s+", " ", "".join(kept)).casefold()
+
+
+# Frases de los prompts de sistema (normalizadas con `normalize_text`) que una salida
+# normal no tiene motivo para repetir. Si el modelo las escribe, está volcando sus
+# instrucciones. test_detectors.py comprueba que cada una sigue estando en alguna
+# plantilla, para que no se desfasen al publicar una versión.
+PROMPT_LEAK_PHRASES = (
+    "senior project estimator with 15+ years of experience",
+    "estimador de proyectos senior con mas de 15 anos de experiencia",
+    "no elijas un numero redondo para ajustar las fases",
+    "vuelve a sumar las fases y comprueba que coincidan con los totales",
+)
+
+# `<estimation>` no cuenta: el modelo lo copia de los ejemplos y el servicio lo quita.
+_LEAK_TAGS = re.compile(
+    r"</?\s*(?:" + "|".join(t for t in PROMPT_TAGS if t != "estimation") + r")\s*>"
+)
+
+
+def find_prompt_leak(text: str) -> str | None:
+    """`etiqueta` o `frase` si el texto vuelca partes del prompt de sistema; None si no.
+
+    Mejor esfuerzo: reconoce las etiquetas de las plantillas y las frases fijas de
+    `PROMPT_LEAK_PHRASES`. Una paráfrasis de las instrucciones pasa.
+    """
+    normalized = normalize_text(text)
+    if _LEAK_TAGS.search(normalized):
+        return "etiqueta"
+    if any(phrase in normalized for phrase in PROMPT_LEAK_PHRASES):
+        return "frase"
+    return None
 
 
 # --- Datos personales -------------------------------------------------------
