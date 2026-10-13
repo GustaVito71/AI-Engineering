@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^(lidr_[234]|ganttly)/
+      - id: ruff-format
+        files: ^(lidr_[234]|ganttly)/
