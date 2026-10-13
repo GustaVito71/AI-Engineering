@@ -310,6 +310,28 @@ async def test_solo_se_guardan_estimaciones_sanas(estimacion, se_guarda) -> None
         assert (await cache.lookup(NS, DESC)).entry is None
 
 
+@pytest.mark.parametrize(
+    ("estimacion", "motivos"),
+    [
+        (_estimacion(confidence_pct=69), ["confianza_baja"]),
+        (
+            _estimacion(totals={"hours": 330, "cost_eur": 20000, "duration_weeks": 5}),
+            ["totales_no_cuadran"],
+        ),
+        (StructuredResult.model_validate(RECHAZO), ["fuera_de_alcance", "confianza_baja"]),
+    ],
+)
+async def test_el_evento_no_guardada_dice_el_motivo(estimacion, motivos) -> None:
+    embedder = _Embedder({DESC: [1.0, 0.0]})
+    cache = _cache(embedder)
+
+    with capture_logs() as logs:
+        await _guardar(cache, embedder, estimacion=estimacion)
+
+    [evento] = [e for e in logs if e["event"] == "cache_semantica_no_guardada"]
+    assert evento["motivos"] == motivos
+
+
 async def test_sin_embedding_no_se_guarda() -> None:
     cache = _cache(_Embedder({}))
     assert await cache.store(NS, DESC, SemanticLookup(), _entrada(), _estimacion()) is False

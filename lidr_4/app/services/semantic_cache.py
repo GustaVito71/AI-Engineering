@@ -8,7 +8,7 @@ Dos descripciones cuentan como la misma consulta cuando se cumplen las tres cosa
    sea. Así subir de versión el prompt no devuelve estimaciones de la anterior
    (PLAN.md §8).
 2. **Similitud coseno** de los embeddings de las descripciones por encima del umbral
-   (`CACHE_SEMANTIC_THRESHOLD`, 0.92 por defecto).
+   (`CACHE_SEMANTIC_THRESHOLD`, 0.95 por defecto).
 3. **Mismas cifras.** Los embeddings casi no distinguen «20.000 usuarios» de «200.000
    usuarios», y la estimación cambia mucho. Un acierto exige que las dos descripciones
    traigan el mismo conjunto de números.
@@ -290,11 +290,18 @@ class SemanticRedisCache:
 
     def is_storable(self, estimation: StructuredResult) -> bool:
         """Solo estimaciones sanas se reparten a otras descripciones (guarda anti-envenenamiento)."""
-        return (
-            not estimation.out_of_scope
-            and estimation.confidence_pct >= self._min_confidence_pct
-            and not estimation.total_discrepancies()
-        )
+        return not self._unstorable_reasons(estimation)
+
+    def _unstorable_reasons(self, estimation: StructuredResult) -> list[str]:
+        """Por qué no se reparte: vacío si es sana. Solo nombres de reglas, nunca texto."""
+        reasons = []
+        if estimation.out_of_scope:
+            reasons.append("fuera_de_alcance")
+        if estimation.confidence_pct < self._min_confidence_pct:
+            reasons.append("confianza_baja")
+        if estimation.total_discrepancies():
+            reasons.append("totales_no_cuadran")
+        return reasons
 
     async def store(
         self,
@@ -307,10 +314,12 @@ class SemanticRedisCache:
         """Guarda la estimación para descripciones parecidas. True si se guardó. Nunca lanza."""
         if lookup.embedding is None:
             return False  # el embedding falló al buscar: no se reintenta ahora
-        if not self.is_storable(estimation):
+        reasons = self._unstorable_reasons(estimation)
+        if reasons:
             emit(
                 __name__,
                 "cache_semantica_no_guardada",
+                motivos=reasons,
                 confianza_pct=estimation.confidence_pct,
                 fuera_de_alcance=estimation.out_of_scope,
             )
