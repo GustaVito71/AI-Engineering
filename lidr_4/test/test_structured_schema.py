@@ -8,12 +8,16 @@ igual). Estos tests fijan qué cae de cada lado.
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from app.schemas.structured_estimation import (
+    MAX_HOURLY_RATE_EUR,
     MIN_CONFIDENCE_PCT,
+    MIN_HOURLY_RATE_EUR,
     OUT_OF_SCOPE_PREFIX,
     UNESTIMATED_PHASE,
     StructuredResult,
@@ -146,9 +150,9 @@ def test_la_duracion_total_no_se_compara_con_la_suma() -> None:
 
 def test_coste_con_decimales_se_compara_sin_ruido_de_coma_flotante() -> None:
     datos = copy.deepcopy(VALIDA)
-    datos["phases"][0]["cost_eur"] = 0.1
-    datos["phases"][1]["cost_eur"] = 0.2
-    datos["totals"]["cost_eur"] = 0.3  # 0.1 + 0.2 == 0.30000000000000004
+    datos["phases"][0]["cost_eur"] = 3500.1
+    datos["phases"][1]["cost_eur"] = 16000.3
+    datos["totals"]["cost_eur"] = 19500.4  # 3500.1 + 16000.3 == 19500.399999999998
     assert StructuredResult.model_validate(datos).total_discrepancies() == []
 
 
@@ -315,9 +319,13 @@ def test_las_horas_de_una_fase_tienen_que_caber_en_el_equipo() -> None:
 
 def test_el_borde_del_tope_se_acepta() -> None:
     """120 h = 3 personas × 1 semana × 40 h."""
-    StructuredResult.model_validate(_con(fase_hours=120, total_hours=440))
+    StructuredResult.model_validate(
+        _con(fase_hours=120, fase_cost_eur=6000, total_hours=440, total_cost_eur=26000)
+    )
     with pytest.raises(ValidationError):
-        StructuredResult.model_validate(_con(fase_hours=121, total_hours=441))
+        StructuredResult.model_validate(
+            _con(fase_hours=121, fase_cost_eur=6050, total_hours=441, total_cost_eur=26050)
+        )
 
 
 def test_el_total_tambien_tiene_que_caber_en_el_equipo() -> None:
@@ -342,3 +350,140 @@ def test_el_tope_suma_todos_los_roles() -> None:
 def test_una_estimacion_rechazada_no_se_compara_con_el_equipo() -> None:
     """En cero y sin equipo: no hay horas que comparar."""
     StructuredResult.model_validate(RECHAZO)
+
+
+# --- Alucinación de bajo nivel (WU9 B, paso 3) ----------------------------------------
+
+
+def test_las_tarifas_del_schema_son_las_de_las_plantillas() -> None:
+    """Si una versión nueva cambia las tarifas, el rango de `_cost_per_hour_in_rates` miente."""
+    raiz = Path(__file__).resolve().parents[1] / "app" / "prompts" / "estimation"
+    tarifas = [
+        rol["eur_per_hour"]
+        for archivo in raiz.glob("*/examples.yaml")
+        for rol in yaml.safe_load(archivo.read_text(encoding="utf-8"))["rates"].values()
+    ]
+    assert tarifas
+    assert (min(tarifas), max(tarifas)) == (MIN_HOURLY_RATE_EUR, MAX_HOURLY_RATE_EUR)
+
+
+def test_el_coste_por_hora_admite_el_margen_de_redondeo() -> None:
+    """70 h: el rango aceptado va de 47,50 EUR/h (3.325) a 65,63 EUR/h (4.593,75)."""
+    for coste in (3325, 3950, 4593):
+        StructuredResult.model_validate(_con(fase_cost_eur=coste, total_cost_eur=coste + 20000))
+    for coste in (3300, 4600):
+        with pytest.raises(ValidationError, match="coste por hora"):
+            StructuredResult.model_validate(_con(fase_cost_eur=coste, total_cost_eur=coste + 20000))
+
+
+def test_el_coste_por_hora_bajo_el_minimo_se_rechaza_con_la_cifra() -> None:
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(fase_cost_eur=700, total_cost_eur=20700))
+    mensaje = str(error.value)
+    assert "Descubrimiento (700 EUR en 70 h son 10 EUR/h)" in mensaje
+    assert "entre 50 y 62,50 EUR/h" in mensaje
+
+
+def test_el_coste_por_hora_sobre_el_maximo_se_rechaza() -> None:
+    with pytest.raises(ValidationError, match="coste por hora"):
+        StructuredResult.model_validate(_con(fase_cost_eur=7000, total_cost_eur=27000))
+
+
+def test_el_coste_por_hora_nombra_todas_las_fases_fuera_de_rango() -> None:
+    datos = _con(fase_cost_eur=700, total_cost_eur=700 + 100)
+    datos["phases"][1]["cost_eur"] = 100
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(datos)
+    assert "Descubrimiento" in str(error.value) and "Implementación" in str(error.value)
+
+
+def test_el_rechazo_no_se_mide_contra_las_tarifas() -> None:
+    StructuredResult.model_validate(RECHAZO)
+
+
+def test_una_duracion_total_mayor_que_la_suma_se_rechaza() -> None:
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(total_duration_weeks=9))
+    assert "totals.duration_weeks (9) es mayor que la suma de las fases (6)" in str(error.value)
+
+
+def test_una_duracion_total_menor_que_la_fase_mas_larga_se_rechaza() -> None:
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(total_duration_weeks=4, team=_EQUIPO_GRANDE))
+    assert "menor que la fase más larga (5)" in str(error.value)
+
+
+_EQUIPO_GRANDE = [{"role": "Desarrollador", "headcount": 10}]
+
+
+def test_las_fases_solapadas_y_el_margen_de_la_duracion_se_aceptan() -> None:
+    for semanas in (5, 5.5, 6, 6.3):  # 6 + 5 % = 6,3
+        StructuredResult.model_validate(_con(total_duration_weeks=semanas, team=_EQUIPO_GRANDE))
+    for semanas in (4.7, 6.4):
+        with pytest.raises(ValidationError, match="totals.duration_weeks"):
+            StructuredResult.model_validate(_con(total_duration_weeks=semanas, team=_EQUIPO_GRANDE))
+
+
+def _con_resumen(texto: str) -> dict:
+    return _con(summary=texto)
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        "Proyecto de 390 horas y 23.950 EUR en 6 semanas con tres fases.",
+        "Unas 395 h, 24.000 euros y 6,2 semanas.",
+        "Total 23.950 € (62,50 EUR/hora de tope), jornadas de 32 h por persona.",
+        "La fase de Implementación pesa 320 horas de las 390.",
+        "Hay 3 sprints, 15 % de contingencia y 2 integraciones externas.",
+        "Unas 40 horas semanales por persona.",
+    ],
+)
+def test_las_cifras_del_resumen_que_estan_en_los_campos_se_aceptan(texto) -> None:
+    StructuredResult.model_validate(_con_resumen(texto))
+
+
+@pytest.mark.parametrize(
+    ("texto", "cita"),
+    [
+        ("Proyecto de 500 horas en 6 semanas.", "500 horas"),
+        ("Proyecto de 390 horas y 30.000 EUR.", "30.000 EUR"),
+        ("Proyecto de 390 horas en 12 semanas.", "12 semanas"),
+        ("Costará 23.950 € o 99.999 euros.", "99.999 euros"),
+        ("Entre 3,5 semanas y 6 semanas.", "3,5 semanas"),
+    ],
+)
+def test_una_cifra_inventada_en_el_resumen_se_rechaza_y_se_cita(texto, cita) -> None:
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con_resumen(texto))
+    assert cita in str(error.value)
+
+
+def test_el_resumen_de_una_fase_tambien_se_comprueba() -> None:
+    datos = _con()
+    datos["phases"][0]["summary"] = "Descubrimiento con 4.000 horas de entrevistas."
+    with pytest.raises(ValidationError, match=r"4\.000 horas"):
+        StructuredResult.model_validate(datos)
+
+
+def test_el_resumen_de_un_rechazo_no_se_comprueba() -> None:
+    datos = copy.deepcopy(RECHAZO)
+    datos["summary"] = f"{OUT_OF_SCOPE_PREFIX} faltan datos, pensábamos en 500 horas."
+    StructuredResult.model_validate(datos)
+
+
+def test_la_suma_de_las_semanas_de_las_fases_es_una_cifra_conocida() -> None:
+    """Total de 5 semanas con fases de 1 y 5: «6 semanas» es la suma, no un invento."""
+    StructuredResult.model_validate(
+        _con(total_duration_weeks=5, summary="Dura 5 semanas en total, 6 semanas si no se solapan.")
+    )
+    with pytest.raises(ValidationError, match="8 semanas"):
+        StructuredResult.model_validate(
+            _con(total_duration_weeks=5, summary="Dura 5 semanas, o hasta 8 semanas.")
+        )
+
+
+def test_una_semana_en_singular_tambien_es_una_cifra() -> None:
+    datos = _con(fase_duration_weeks=2, total_duration_weeks=7, summary="Ocupa 4 semana.")
+    with pytest.raises(ValidationError, match="4 semana"):
+        StructuredResult.model_validate(datos)

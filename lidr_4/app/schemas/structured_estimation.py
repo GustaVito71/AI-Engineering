@@ -17,6 +17,13 @@ Dos clases de comprobaciones, con consecuencias distintas:
   fase, ni el total, puede pasar de `MAX_HOURS_PER_PERSON_WEEK` por persona y
   semana con todo el equipo trabajando (`_hours_fit_team`). Es un error y se
   re-pregunta: unas horas que el equipo no puede trabajar no son una estimación.
+- Tres comprobaciones de alucinación de bajo nivel (WU9 B, paso 3), todas locales y
+  todas errores que se re-preguntan: el coste por hora de cada fase tiene que caer
+  entre las tarifas de los prompts (`_cost_per_hour_in_rates`), la duración total no
+  puede ser mayor que la suma de las fases ni menor que la más larga
+  (`_duration_is_coherent`), y las cifras con unidad que cita un resumen (horas, EUR,
+  semanas) tienen que ser las de los campos (`_summary_figures_exist`). Las tres
+  dejan en el mensaje el valor que esperaban, para que el modelo pueda corregirlo.
 - La coherencia de los totales depende del tamaño del error. Los totales los
   declara el modelo (PLAN §3.4). Una diferencia de hasta
   `TOTALS_MAX_DEVIATION_PCT` con la suma de las fases se devuelve igual, con un
@@ -53,6 +60,15 @@ TOTALS_MAX_DEVIATION_PCT = 5
 # salida. Las horas productivas de los prompts son 32; el tope deja margen de
 # redondeo (las horas se redondean hacia arriba) y no marca una semana larga.
 MAX_HOURS_PER_PERSON_WEEK = 40
+# Tarifa horaria mínima y máxima de los prompts (app/prompts/estimation/*/examples.yaml;
+# test_structured_schema.py vigila que sigan siéndolo). El coste de una fase mezcla
+# roles, así que su coste por hora cae entre las dos. El margen cubre el redondeo
+# hacia arriba de horas y costes que piden los prompts.
+MIN_HOURLY_RATE_EUR = 50.0
+MAX_HOURLY_RATE_EUR = 62.5
+RATE_TOLERANCE_PCT = 5
+# Diferencia máxima, en semanas, entre una duración citada en un resumen y la de los campos.
+SUMMARY_WEEKS_TOLERANCE = 0.5
 
 
 class Risk(BaseModel):
@@ -273,6 +289,91 @@ class StructuredResult(BaseModel):
             raise ValueError("; ".join(deviated) + ". Calcula cada total sumando las fases.")
         return self
 
+    # --- Output guardrails: low-level hallucination checks ----------------------
+    @model_validator(mode="after")
+    def _cost_per_hour_in_rates(self) -> StructuredResult:
+        """El coste por hora de cada fase tiene que caer entre las tarifas del prompt.
+
+        Una fase mezcla roles, así que su coste por hora es un promedio entre la
+        tarifa mínima y la máxima. Fuera de ese rango (con `RATE_TOLERANCE_PCT` de
+        margen por el redondeo) el modelo inventó el coste o las horas.
+        """
+        if self.out_of_scope:
+            return self
+        low = MIN_HOURLY_RATE_EUR * (1 - RATE_TOLERANCE_PCT / 100)
+        high = MAX_HOURLY_RATE_EUR * (1 + RATE_TOLERANCE_PCT / 100)
+        off = [
+            f"{p.name} ({format_number(p.cost_eur)} EUR en {format_number(p.hours)} h son "
+            f"{format_number(p.cost_eur / p.hours)} EUR/h)"
+            for p in self.phases
+            if not low <= p.cost_eur / p.hours <= high
+        ]
+        if off:
+            raise ValueError(
+                "El coste por hora queda fuera de las tarifas (entre "
+                f"{format_number(MIN_HOURLY_RATE_EUR)} y {format_number(MAX_HOURLY_RATE_EUR)} "
+                f"EUR/h): {'; '.join(off)}. Recalcula el coste con las tarifas de <scope>."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _duration_is_coherent(self) -> StructuredResult:
+        """La duración total está entre la fase más larga y la suma de las fases.
+
+        Las fases pueden solaparse (la duración es menor que la suma) pero no más
+        que hasta que la más larga las contiene, y no pueden dejar huecos que el
+        modelo no declaró (mayor que la suma). Se admite `TOTALS_MAX_DEVIATION_PCT`
+        de margen, como en los totales.
+        """
+        if self.out_of_scope:
+            return self
+        total = self.totals.duration_weeks
+        summed = sum(p.duration_weeks for p in self.phases)
+        longest = max(p.duration_weeks for p in self.phases)
+        margin = TOTALS_MAX_DEVIATION_PCT / 100
+        if total > summed * (1 + margin):
+            raise ValueError(
+                f"totals.duration_weeks ({format_number(total)}) es mayor que la suma de las "
+                f"fases ({format_number(summed)}): solo puede igualarla si van una detrás de otra."
+            )
+        if total < longest * (1 - margin):
+            raise ValueError(
+                f"totals.duration_weeks ({format_number(total)}) es menor que la fase más larga "
+                f"({format_number(longest)}): el proyecto dura al menos lo que su fase más larga."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _summary_figures_exist(self) -> StructuredResult:
+        """Las cifras con unidad que cita un resumen tienen que estar en los campos.
+
+        Solo mira horas, EUR y semanas pegadas a su unidad («390 horas», «23.950 EUR»,
+        «6 semanas»); una cifra sin unidad o con otra («3 sprints», «15 %») no se
+        toca. Se compara con las horas, los costes y las duraciones de las fases y del
+        total, con `TOTALS_MAX_DEVIATION_PCT` de margen (`SUMMARY_WEEKS_TOLERANCE` en
+        semanas).
+        """
+        if self.out_of_scope:
+            return self
+        known = {
+            "h": [*(p.hours for p in self.phases), self.totals.hours],
+            "eur": [*(p.cost_eur for p in self.phases), self.totals.cost_eur],
+            "w": [*(p.duration_weeks for p in self.phases), self.totals.duration_weeks],
+        }
+        known["w"].append(sum(p.duration_weeks for p in self.phases))
+        invented = [
+            quote
+            for text in (self.summary, *(p.summary for p in self.phases))
+            for quote in _unknown_figures(text, known)
+        ]
+        if invented:
+            raise ValueError(
+                "Un resumen cita cifras que no están en la estimación: "
+                f"{', '.join(dict.fromkeys(invented))}. Cita solo horas, costes y semanas de "
+                "las fases o de los totales, o no cites cifras."
+            )
+        return self
+
     def total_discrepancies(self) -> list[str]:
         """Avisos para el usuario si los totales no coinciden con la suma de las fases.
 
@@ -295,6 +396,46 @@ class StructuredResult(BaseModel):
                 f"con la suma de las fases ({format_number(cost)} EUR)."
             )
         return warnings
+
+
+# Un número en castellano («29.850», «1.250,50», «6», «1,5», «1.5») pegado a su unidad.
+# No cuenta si sigue «por», «/» o «semanales»: «32 h por persona», «62,50 EUR/hora».
+_FIGURE = re.compile(
+    r"(?<![\w.,])(\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)\s*"
+    r"(horas|h|eur|euros|€|semanas|semana)(?!\w)(?!\s*(?:/|por\b|semanales))",
+    re.IGNORECASE,
+)
+_UNIT_KIND = {
+    "horas": "h",
+    "h": "h",
+    "eur": "eur",
+    "euros": "eur",
+    "€": "eur",
+    "semanas": "w",
+    "semana": "w",
+}
+
+
+def _parse_number(raw: str) -> float:
+    """'29.850' -> 29850; '1.250,50' -> 1250.5; '1,5' y '1.5' -> 1.5."""
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?", raw):
+        raw = raw.replace(".", "")
+    return float(raw.replace(",", "."))
+
+
+def _unknown_figures(text: str, known: dict[str, list[float]]) -> list[str]:
+    """Las cifras con unidad de `text` que no se parecen a ninguna de `known[unidad]`."""
+    unknown = []
+    for match in _FIGURE.finditer(text):
+        kind = _UNIT_KIND[match.group(2).casefold()]
+        value = _parse_number(match.group(1))
+        if kind == "w":
+            close = any(abs(value - k) <= SUMMARY_WEEKS_TOLERANCE for k in known[kind])
+        else:
+            close = any(abs(value - k) * 100 <= TOTALS_MAX_DEVIATION_PCT * k for k in known[kind])
+        if not close:
+            unknown.append(match.group(0).strip())
+    return unknown
 
 
 def _zero_fields(duration_weeks: float, hours: float, cost_eur: float) -> list[str]:
