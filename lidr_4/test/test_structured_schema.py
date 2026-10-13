@@ -42,7 +42,7 @@ VALIDA = {
             "risks": [{"risk": "Cambios de alcance", "mitigation": "Cerrar el alcance antes"}],
         },
     ],
-    "team": [{"role": "Desarrollador", "headcount": 2}],
+    "team": [{"role": "Desarrollador", "headcount": 3}],
     "totals": {"hours": 390, "cost_eur": 23950, "duration_weeks": 6},
     "summary": "Estimación de prueba con las fases y el equipo indicados.",
     "confidence_pct": 70,
@@ -226,6 +226,28 @@ def test_una_fase_estimada_en_cero_es_un_error(cambio) -> None:
         StructuredResult.model_validate(_con(**cambio))
 
 
+@pytest.mark.parametrize("campo", ["duration_weeks", "hours", "cost_eur"])
+def test_un_total_en_cero_se_nombra_para_que_el_modelo_lo_corrija(campo) -> None:
+    """El mensaje de la re-pregunta dice cuál total está en cero, no solo que alguno lo está."""
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(**{f"total_{campo}": 0}))
+    assert f"en cero: totals.{campo}." in str(error.value)
+
+
+def test_varios_totales_en_cero_se_nombran_todos() -> None:
+    with pytest.raises(ValidationError, match=r"en cero: totals.duration_weeks, totals.hours\."):
+        StructuredResult.model_validate(_con(total_duration_weeks=0, total_hours=0))
+
+
+@pytest.mark.parametrize(
+    ("cambio", "campo"),
+    [({"fase_hours": 0}, "hours"), ({"fase_cost_eur": 0}, "cost_eur")],
+)
+def test_una_fase_en_cero_dice_que_campo(cambio, campo) -> None:
+    with pytest.raises(ValidationError, match=rf"no los tiene: Descubrimiento \({campo}\)"):
+        StructuredResult.model_validate(_con(**cambio))
+
+
 def test_una_estimacion_sin_equipo_es_un_error() -> None:
     with pytest.raises(ValidationError, match="al menos un rol"):
         StructuredResult.model_validate(_con(team=[]))
@@ -273,5 +295,50 @@ def test_justo_cinco_por_ciento_sigue_siendo_un_aviso() -> None:
 
 
 def test_la_duracion_total_no_tiene_tolerancia() -> None:
-    """Las fases pueden solaparse: ni aviso ni error por la duración."""
-    StructuredResult.model_validate(_con(total_duration_weeks=1))
+    """Las fases pueden solaparse: ni aviso ni error por la duración, mientras las horas quepan."""
+    estimacion = StructuredResult.model_validate(_con(total_duration_weeks=5))
+    assert estimacion.total_discrepancies() == []
+
+
+# --- Guardrail de salida: las horas caben en el equipo ----------------------------------
+
+
+def test_las_horas_de_una_fase_tienen_que_caber_en_el_equipo() -> None:
+    """3 personas en 1 semana: como mucho 120 h. 200 h no las trabaja nadie."""
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(fase_hours=200, total_hours=520))
+    mensaje = str(error.value)
+    assert "no caben en el equipo" in mensaje
+    assert "Descubrimiento (200 h en 1 semanas)" in mensaje
+    assert "3 personas" in mensaje
+
+
+def test_el_borde_del_tope_se_acepta() -> None:
+    """120 h = 3 personas × 1 semana × 40 h."""
+    StructuredResult.model_validate(_con(fase_hours=120, total_hours=440))
+    with pytest.raises(ValidationError):
+        StructuredResult.model_validate(_con(fase_hours=121, total_hours=441))
+
+
+def test_el_total_tambien_tiene_que_caber_en_el_equipo() -> None:
+    """390 h en 1 semana con 3 personas: las fases se solapan, pero no tanto."""
+    with pytest.raises(ValidationError) as error:
+        StructuredResult.model_validate(_con(total_duration_weeks=1))
+    assert "totals (390 h en 1 semanas)" in str(error.value)
+
+
+def test_el_tope_crece_con_el_equipo() -> None:
+    una_persona = _con(team=[{"role": "Desarrollador", "headcount": 1}])
+    with pytest.raises(ValidationError, match="1 personas"):
+        StructuredResult.model_validate(una_persona)  # 320 h en 5 semanas: tope 200 h
+    StructuredResult.model_validate(_con(team=[{"role": "Desarrollador", "headcount": 2}]))
+
+
+def test_el_tope_suma_todos_los_roles() -> None:
+    equipo = [{"role": "Desarrollador", "headcount": 1}, {"role": "QA", "headcount": 1}]
+    StructuredResult.model_validate(_con(team=equipo))  # 2 personas: 5 semanas, tope 400 h
+
+
+def test_una_estimacion_rechazada_no_se_compara_con_el_equipo() -> None:
+    """En cero y sin equipo: no hay horas que comparar."""
+    StructuredResult.model_validate(RECHAZO)

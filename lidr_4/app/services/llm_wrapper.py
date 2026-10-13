@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import instructor
-from instructor.core import InstructorRetryException
+from instructor.core import IncompleteOutputException, InstructorRetryException
 from litellm import Router, completion_cost
 
 from app.config import API_KEY_VARIABLES, LLMConfigurationError, Settings, provider_from_model
@@ -249,8 +249,21 @@ class LLMWrapper:
         (v3) o `RenderedResult` (v4). `context` llega a los validadores (en v4, el
         `output_format` de la request).
 
+        Política de reintento (cada caso tiene un dueño y un tope):
+        - La respuesta no cumple el schema (incluidas las reglas del guardrail de
+          salida, como las horas contra el equipo): se vuelve a pedir con el error,
+          hasta `STRUCTURED_MAX_RETRIES` veces. Agotadas, `StructuredOutputError`.
+        - La respuesta se cortó por `max_tokens`: NO se reintenta. Con el mismo
+          presupuesto el modelo se corta en el mismo punto, y cada intento se
+          paga. Sale `IncompleteJSONError` de inmediato, con lo gastado.
+        - El proveedor falla (timeout, conexión, 5xx): lo reintenta el Router y,
+          si no alcanza, responde el modelo de respaldo (`LLM_MAX_RETRIES`).
+        - Nada de esto se escribe en la caché: lo hace el servicio, solo con una
+          respuesta válida.
+
         Errores:
         - `StructuredOutputError`: ningún intento cumplió el schema.
+        - `IncompleteJSONError`: la respuesta llegó cortada por `max_tokens`.
         - Las excepciones de LiteLLM (Timeout, APIConnectionError...) llegan
           tal cual: Instructor las envuelve y acá se desenvuelven, para que el
           endpoint siga respondiendo 504 a un timeout y 502 al resto.
@@ -277,6 +290,15 @@ class LLMWrapper:
                 max_tokens=max_tokens or self._max_tokens,
                 temperature=0.1,
             )
+        except IncompleteOutputException as exc:
+            # Instructor no re-pregunta una respuesta cortada; sin esto saldría como
+            # un fallo genérico del proveedor y sin el coste que ya se gastó.
+            completions = responses or [exc.last_completion]
+            raise IncompleteJSONError(
+                attempts=len(completions),
+                cost_usd=_total_cost(completions),
+                max_tokens=max_tokens or self._max_tokens,
+            ) from None
         except InstructorRetryException as exc:
             cause = exc.__cause__
             if cause is not None and not isinstance(cause, ValueError):
@@ -336,6 +358,24 @@ class StructuredOutputError(Exception):
         self.attempts = attempts
         self.cost_usd = cost_usd
         self.last_error = last_error
+
+
+class IncompleteJSONError(Exception):
+    """La respuesta del modelo se cortó por `max_tokens` antes de cerrar el JSON.
+
+    No es un fallo de validación: re-preguntar con el mismo presupuesto cortaría
+    la respuesta en el mismo punto. La arregla quien configura `LLM_MAX_TOKENS`
+    (o un prompt que pida menos), por eso es un error propio y no un 502 genérico.
+    """
+
+    def __init__(self, *, attempts: int, cost_usd: float, max_tokens: int) -> None:
+        super().__init__(
+            f"Respuesta cortada por max_tokens={max_tokens} tras {attempts} "
+            "intento(s); el JSON quedó incompleto."
+        )
+        self.attempts = attempts
+        self.cost_usd = cost_usd
+        self.max_tokens = max_tokens
 
 
 def _usage(response: Any, field: str) -> int:

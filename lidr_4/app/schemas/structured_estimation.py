@@ -13,6 +13,10 @@ Dos clases de comprobaciones, con consecuencias distintas:
   coherencia del rechazo: con confianza menor que `MIN_CONFIDENCE_PCT`, el resumen
   empieza con `OUT_OF_SCOPE_PREFIX` y la estimación es una sola fase
   `UNESTIMATED_PHASE` en cero; con confianza suficiente, todo es positivo.
+- Las horas tienen que caber en el equipo (WU9 B, guardrail de salida): ninguna
+  fase, ni el total, puede pasar de `MAX_HOURS_PER_PERSON_WEEK` por persona y
+  semana con todo el equipo trabajando (`_hours_fit_team`). Es un error y se
+  re-pregunta: unas horas que el equipo no puede trabajar no son una estimación.
 - La coherencia de los totales depende del tamaño del error. Los totales los
   declara el modelo (PLAN §3.4). Una diferencia de hasta
   `TOTALS_MAX_DEVIATION_PCT` con la suma de las fases se devuelve igual, con un
@@ -45,6 +49,10 @@ UNESTIMATED_PHASE = "Sin estimar"
 # Desvío máximo (en %) entre un total declarado (horas o coste) y la suma de las
 # fases. Hasta este valor es un aviso; por encima, un error que se re-pregunta.
 TOTALS_MAX_DEVIATION_PCT = 5
+# Tope de horas por persona y semana de calendario que admite el guardrail de
+# salida. Las horas productivas de los prompts son 32; el tope deja margen de
+# redondeo (las horas se redondean hacia arriba) y no marca una semana larga.
+MAX_HOURS_PER_PERSON_WEEK = 40
 
 
 class Risk(BaseModel):
@@ -189,7 +197,11 @@ class StructuredResult(BaseModel):
                     "team vacío y todos los totales en 0."
                 )
             return self
-        zeroed = [f.name for f in self.phases if not (f.duration_weeks and f.hours and f.cost_eur)]
+        zeroed = [
+            f"{f.name} ({', '.join(missing)})"
+            for f in self.phases
+            if (missing := _zero_fields(f.duration_weeks, f.hours, f.cost_eur))
+        ]
         if zeroed:
             raise ValueError(
                 "Cada fase estimada necesita duration_weeks, hours y cost_eur mayores que 0; "
@@ -197,10 +209,42 @@ class StructuredResult(BaseModel):
             )
         if not self.team:
             raise ValueError("Una estimación necesita al menos un rol en team.")
-        if not (self.totals.duration_weeks and self.totals.hours and self.totals.cost_eur):
+        if missing := _zero_fields(
+            self.totals.duration_weeks, self.totals.hours, self.totals.cost_eur
+        ):
             raise ValueError(
                 "Los totales de una estimación necesitan duration_weeks, hours y cost_eur "
-                "mayores que 0."
+                f"mayores que 0; en cero: {', '.join(f'totals.{name}' for name in missing)}. "
+                "duration_weeks es la duración de calendario en semanas (suma de las fases "
+                "si van una detrás de otra), no puede ser 0."
+            )
+        return self
+
+    # --- Output guardrail: hours vs team -----------------------------------------
+    @model_validator(mode="after")
+    def _hours_fit_team(self) -> StructuredResult:
+        """Las horas no pueden superar lo que el equipo trabaja en las semanas dadas.
+
+        `team` es el equipo de todo el proyecto, así que su tamaño es un tope para
+        cualquier fase (una fase puede usar solo a parte del equipo) y para el
+        total (las fases pueden solaparse, pero no suman más gente que el equipo).
+        Una estimación rechazada va toda en cero (`_shape_matches_outcome`, que corre
+        antes) y no tiene horas que comparar.
+        """
+        people = sum(member.headcount for member in self.team)
+        over = [
+            f"{label} ({format_number(hours)} h en {format_number(weeks)} semanas)"
+            for label, hours, weeks in (
+                *((p.name, p.hours, p.duration_weeks) for p in self.phases),
+                ("totals", self.totals.hours, self.totals.duration_weeks),
+            )
+            if hours > weeks * people * MAX_HOURS_PER_PERSON_WEEK
+        ]
+        if over:
+            raise ValueError(
+                f"Las horas no caben en el equipo ({people} personas, como mucho "
+                f"{MAX_HOURS_PER_PERSON_WEEK} h por persona y semana): {'; '.join(over)}. "
+                "Corrige las horas, las semanas o el equipo."
             )
         return self
 
@@ -251,6 +295,19 @@ class StructuredResult(BaseModel):
                 f"con la suma de las fases ({format_number(cost)} EUR)."
             )
         return warnings
+
+
+def _zero_fields(duration_weeks: float, hours: float, cost_eur: float) -> list[str]:
+    """Los campos en cero de entre duration_weeks, hours y cost_eur, en ese orden."""
+    return [
+        name
+        for name, value in (
+            ("duration_weeks", duration_weeks),
+            ("hours", hours),
+            ("cost_eur", cost_eur),
+        )
+        if not value
+    ]
 
 
 def format_number(n: float) -> str:

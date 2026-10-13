@@ -42,7 +42,7 @@ BASE = {
             "risks": [],
         },
     ],
-    "team": [{"role": "Desarrollador", "headcount": 2}],
+    "team": [{"role": "Desarrollador", "headcount": 6}],
     "totals": {"hours": 1450, "cost_eur": 89000, "duration_weeks": 8},
     "summary": "Estimación de prueba con dos fases y un rol.",
     "confidence_pct": 70,

@@ -16,6 +16,8 @@ lo que hace el servicio y no el router ni el wrapper:
 
 from __future__ import annotations
 
+import json
+
 import litellm
 import pytest
 from fastapi.testclient import TestClient
@@ -45,6 +47,7 @@ from app.services.guardrails import (
     InputGuardrailViolation,
 )
 from app.services.llm_wrapper import LLMCallResult, StructuredCallResult, StructuredOutputError
+from app.services.output_guardrails import LOW_CONFIDENCE_WARN_PCT
 
 DESCRIPCION = "Un SaaS B2B pequeño para gestionar el préstamo de equipos a empleados."
 SOLICITUD = EstimationRequest(
@@ -677,3 +680,63 @@ async def test_un_error_del_wrapper_no_escribe_en_la_cache() -> None:
         await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
 
     assert cache.escrituras == []
+
+
+# --- Guardrail de salida: aviso de confianza baja (WU9 B) -----------------------------
+
+CONFIANZA_BAJA = {**ESTIMACION, "confidence_pct": 40}
+
+
+async def test_una_confianza_baja_avisa_y_deja_el_evento() -> None:
+    servicio = EstimationService(_WrapperFalso(estimacion=CONFIANZA_BAJA))
+
+    with capture_logs() as logs:
+        resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+
+    assert [w for w in resultado.warnings if "Confianza baja (40 %)" in w]
+    [evento] = [e for e in logs if e["event"] == "confianza_baja"]
+    assert evento["confianza_pct"] == 40
+    assert evento["prompt_version"] == "v3"
+
+
+async def test_la_confianza_justo_en_el_umbral_no_avisa() -> None:
+    estimacion = {**ESTIMACION, "confidence_pct": LOW_CONFIDENCE_WARN_PCT}
+    servicio = EstimationService(_WrapperFalso(estimacion=estimacion))
+    resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+    assert resultado.warnings == []
+
+
+async def test_un_rechazo_no_lleva_aviso_de_confianza_baja() -> None:
+    """Su confianza es baja por definición: ya dice «Fuera de alcance:»."""
+    servicio = EstimationService(_WrapperFalso(estimacion=FUERA_DE_ALCANCE))
+    with capture_logs() as logs:
+        resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+    assert resultado.warnings == []
+    assert not [e for e in logs if e["event"] == "confianza_baja"]
+
+
+async def test_el_aviso_de_confianza_baja_tambien_sale_de_la_cache() -> None:
+    """El aviso no se guarda con la entrada: se calcula siempre."""
+    wrapper = _WrapperFalso(estimacion=CONFIANZA_BAJA)
+    servicio = EstimationService(wrapper, cache=_CacheMemoria())
+    primero = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+    segundo = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+
+    assert segundo.call.cached is True
+    assert segundo.warnings == primero.warnings != []
+
+
+async def test_una_entrada_de_cache_que_ya_no_cumple_el_guardrail_se_descarta() -> None:
+    """Una estimación guardada con horas imposibles (antes de la regla) cuenta como fallo."""
+    cache = _CacheMemoria()
+    wrapper = _WrapperFalso()
+    servicio = EstimationService(wrapper, cache=cache)
+    await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+    [clave] = cache.datos
+    imposible = {**ESTIMACION, "phases": [{**ESTIMACION["phases"][0], "hours": 9000}]}
+    cache.datos[clave] = {**cache.datos[clave], "content": json.dumps(imposible)}
+
+    resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
+
+    assert resultado.call.cached is False
+    assert len(wrapper.llamadas) == 2

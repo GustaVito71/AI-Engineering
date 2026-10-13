@@ -62,6 +62,7 @@ from app.services.llm_wrapper import (
     emit_completion,
     output_label,
 )
+from app.services.output_guardrails import check_output
 from app.tracing import emit
 
 # Los ejemplos del prompt envuelven cada estimación en <estimation>…</estimation>,
@@ -180,10 +181,12 @@ class EstimationService:
             )
 
             # --- Output guardrails --------------------------------------------------
-            # WU9 B: la validación de la salida va acá, antes de escribir en las cachés
-            # y de los eventos y los avisos. La escritura en las cachés, exacta y
-            # semántica, va después de ella: no se guarda una estimación que el
-            # guardrail rechazó.
+            # WU9 B: lo que rechaza una estimación (horas contra el equipo, totales,
+            # rechazo coherente) ya lo validó el schema dentro del wrapper, con
+            # re-pregunta: acá solo llega una estimación válida. La escritura en las
+            # cachés, exacta y semántica, va después y es la única: no se guarda nada
+            # que el guardrail rechazó. Los avisos (`check_output`) se calculan
+            # después, para que valgan también cuando la estimación sale de la caché.
 
             # ------------------------------------------------------------------------
             await self._cache.set(cache_key, _cache_entry(result))
@@ -200,6 +203,9 @@ class EstimationService:
             )
 
         discrepancies = result.estimation.total_discrepancies()
+        output_warnings = check_output(
+            result.estimation, prompt_version=version, model=result.model
+        )
         if discrepancies:
             emit(
                 __name__,
@@ -212,7 +218,12 @@ class EstimationService:
 
         return StructuredEstimation(
             call=result,
-            warnings=[*guardrail_warnings, *self._llm_wrapper.warnings, *discrepancies],
+            warnings=[
+                *guardrail_warnings,
+                *self._llm_wrapper.warnings,
+                *discrepancies,
+                *output_warnings,
+            ],
         )
 
     async def _check_input(self, request: EstimationRequest) -> tuple[EstimationRequest, list[str]]:

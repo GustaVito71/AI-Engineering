@@ -24,9 +24,14 @@ from app.routers.estimations import (
     INVALID_OUTPUT_MESSAGE,
     PROVIDER_FAILURE_MESSAGE,
     TIMEOUT_MESSAGE,
+    TRUNCATED_OUTPUT_MESSAGE,
 )
 from app.schemas.structured_estimation import StructuredResult
-from app.services.llm_wrapper import StructuredCallResult, StructuredOutputError
+from app.services.llm_wrapper import (
+    IncompleteJSONError,
+    StructuredCallResult,
+    StructuredOutputError,
+)
 
 RUTA = "/api/v1/estimate/structured"
 BODY = {
@@ -277,6 +282,20 @@ def test_sin_estimacion_valida_es_un_502_con_su_mensaje(cliente) -> None:
     assert evento["coste_usd"] == 0.004
     assert evento["salida"] == "estructurada"
     assert DETALLE_INTERNO in evento["detalle"]
+
+
+def test_una_respuesta_cortada_es_un_502_con_su_propio_mensaje(cliente) -> None:
+    error = IncompleteJSONError(attempts=1, cost_usd=0.002, max_tokens=4000)
+    with _con_wrapper(cliente, _WrapperFalso(error=error)) as c, capture_logs() as logs:
+        r = c.post(RUTA, json=BODY)
+
+    assert r.status_code == 502
+    assert r.json() == {"detail": TRUNCATED_OUTPUT_MESSAGE}
+    assert r.json() != {"detail": INVALID_OUTPUT_MESSAGE}
+    [evento] = [e for e in logs if e["event"] == "estimacion_fallida"]
+    assert evento["tipo_error"] == "IncompleteJSONError"
+    assert (evento["intentos"], evento["coste_usd"], evento["max_tokens"]) == (1, 0.002, 4000)
+    assert evento["salida"] == "estructurada"
 
 
 def test_timeout_del_proveedor_es_un_504(cliente) -> None:

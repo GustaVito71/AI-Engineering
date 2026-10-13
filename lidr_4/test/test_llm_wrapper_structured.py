@@ -21,7 +21,7 @@ from litellm import completion_cost
 from structlog.testing import capture_logs
 
 from app.config import get_settings
-from app.services.llm_wrapper import LLMWrapper, StructuredOutputError
+from app.services.llm_wrapper import IncompleteJSONError, LLMWrapper, StructuredOutputError
 
 PRIMARIO = "openai/gpt-4o-mini"
 RESPALDO = "anthropic/claude-haiku-4-5"
@@ -280,3 +280,111 @@ async def test_un_rechazo_mal_formado_se_vuelve_a_pedir(monkeypatch) -> None:
 
     assert result.attempts == 2
     assert "Fuera de alcance:" in vistos[1]["messages"][-1]["content"]
+
+
+# --- Guardrail de salida y respuesta cortada (WU9 B) -----------------------------------
+
+# 500 h en 5 semanas con 2 personas: el tope es 400 h. Cumple todo lo demás.
+HORAS_IMPOSIBLES = json.dumps(
+    {
+        **ESTIMACION,
+        "phases": [{**ESTIMACION["phases"][0], "hours": 500}],
+        "totals": {**ESTIMACION["totals"], "hours": 500},
+    }
+)
+
+
+async def test_unas_horas_que_no_caben_en_el_equipo_se_vuelven_a_pedir(monkeypatch) -> None:
+    w = _construir(monkeypatch)
+    vistos = _respuestas(w, HORAS_IMPOSIBLES, VALIDA)
+
+    result = await _estimate(w)
+
+    assert result.attempts == 2
+    assert result.estimation.phases[0].hours == 320
+    # El segundo intento lleva el error de la regla, para que el modelo lo corrija.
+    segundo = vistos[1]["messages"]
+    assert "no caben en el equipo" in json.dumps(segundo, ensure_ascii=False)
+
+
+async def test_unas_horas_imposibles_que_se_repiten_agotan_los_intentos(monkeypatch) -> None:
+    w = _construir(monkeypatch, STRUCTURED_MAX_RETRIES="1")
+    _respuestas(w, HORAS_IMPOSIBLES, HORAS_IMPOSIBLES)
+
+    with pytest.raises(StructuredOutputError) as error:
+        await _estimate(w)
+
+    assert error.value.attempts == 2
+    assert "no caben en el equipo" in error.value.last_error
+
+
+def _cortada(contenido: str = '{"phases": [{"name": "Impl'):
+    """Una respuesta que el proveedor cortó por max_tokens (finish_reason=length)."""
+    return litellm.ModelResponse(
+        model=PRIMARIO,
+        choices=[
+            {
+                "index": 0,
+                "finish_reason": "length",
+                "message": {"role": "assistant", "content": contenido},
+            }
+        ],
+        usage={"prompt_tokens": 100, "completion_tokens": 4000, "total_tokens": 4100},
+    )
+
+
+async def test_una_respuesta_cortada_no_se_reintenta_y_dice_cuanto_costo(monkeypatch) -> None:
+    w = _construir(monkeypatch, LLM_MAX_TOKENS="4000", STRUCTURED_MAX_RETRIES="3")
+    llamadas: list[dict] = []
+
+    async def acompletion(**kwargs):
+        llamadas.append(kwargs)
+        return _cortada()
+
+    w._router.acompletion = acompletion
+
+    with pytest.raises(IncompleteJSONError) as error:
+        await _estimate(w)
+
+    assert len(llamadas) == 1  # con el mismo presupuesto se cortaría igual
+    assert error.value.attempts == 1
+    assert error.value.max_tokens == 4000
+    assert error.value.cost_usd > 0
+    assert "max_tokens=4000" in str(error.value)
+
+
+async def test_max_tokens_de_la_llamada_manda_en_el_error(monkeypatch) -> None:
+    w = _construir(monkeypatch, LLM_MAX_TOKENS="4000")
+
+    async def acompletion(**_kwargs):
+        return _cortada()
+
+    w._router.acompletion = acompletion
+
+    with pytest.raises(IncompleteJSONError) as error:
+        await w.estimate_structured(
+            system_prompt="s", user_prompt="u", prompt_version="v3", max_tokens=123
+        )
+    assert error.value.max_tokens == 123
+
+
+async def test_cortada_tras_un_reintento_suma_los_dos_intentos(monkeypatch) -> None:
+    w = _construir(monkeypatch, STRUCTURED_MAX_RETRIES="3")
+    original = w._router.acompletion
+    pedidas: list[dict] = []
+
+    async def acompletion(**kwargs):
+        pedidas.append(kwargs)
+        if len(pedidas) == 1:  # primera respuesta: JSON completo que no cumple el schema
+            return await original(**kwargs, mock_response=INVALIDA)
+        return _cortada()
+
+    w._router.acompletion = acompletion
+
+    with pytest.raises(IncompleteJSONError) as error:
+        await _estimate(w)
+
+    assert len(pedidas) == 2
+    assert error.value.attempts == 2
+    una = completion_cost(await original(**pedidas[0], mock_response=INVALIDA))
+    assert error.value.cost_usd > una

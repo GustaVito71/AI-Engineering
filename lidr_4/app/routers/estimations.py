@@ -21,7 +21,9 @@ Errores que pueden devolver, además del 422 de validación de Pydantic:
   LLMConfigurationError en app/main.py, no este router.
 - 504: el proveedor de LLM no respondió a tiempo (agotados reintentos y respaldo).
 - 502: cualquier otro fallo al llamar al proveedor. En /estimate/structured y
-  /estimate/rendered, también cuando ningún intento del modelo cumplió el schema.
+  /estimate/rendered, también cuando ningún intento del modelo cumplió el schema
+  (guardrail de salida incluido) o cuando la respuesta llegó cortada por
+  `max_tokens`, con su propio mensaje.
 
 El router solo traduce HTTP: la versión pedida y los errores. El pipeline
 (render del prompt, llamada y avisos) está en app/services/estimation.py.
@@ -54,7 +56,7 @@ from app.schemas.structured_estimation import (
 )
 from app.services.estimation import EstimationService, PromptRenderError, StructuredEstimation
 from app.services.guardrails import InputGuardrailViolation
-from app.services.llm_wrapper import StructuredOutputError
+from app.services.llm_wrapper import IncompleteJSONError, StructuredOutputError
 from app.tracing import emit
 
 router = APIRouter(prefix="/api/v1", tags=["estimation"])
@@ -185,6 +187,11 @@ def _log_failure(exc: Exception, status_code: int, **extra: object) -> None:
 
 # --- Structured response ----------------------------------------------------
 
+TRUNCATED_OUTPUT_MESSAGE = (
+    "La respuesta del proveedor de IA llegó cortada y no se pudo completar la estimación. "
+    "Volvé a intentarlo; si se repite, avisá al administrador del servicio."
+)
+
 INVALID_OUTPUT_MESSAGE = (
     "El proveedor de IA no devolvió una estimación con el formato esperado. "
     "Volvé a intentarlo en unos minutos."
@@ -289,6 +296,20 @@ async def _estimate_validated(
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=INVALID_OUTPUT_MESSAGE
+        ) from None
+    except IncompleteJSONError as exc:
+        # Respuesta cortada por max_tokens: no se reintentó (saldría igual de cortada).
+        # El presupuesto y el coste ya gastado quedan en el log para ajustar LLM_MAX_TOKENS.
+        _log_failure(
+            exc,
+            status.HTTP_502_BAD_GATEWAY,
+            salida=output_label,
+            intentos=exc.attempts,
+            coste_usd=exc.cost_usd,
+            max_tokens=exc.max_tokens,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=TRUNCATED_OUTPUT_MESSAGE
         ) from None
     except litellm.Timeout as exc:
         # Igual que en /estimate: Timeout antes que el caso general.
