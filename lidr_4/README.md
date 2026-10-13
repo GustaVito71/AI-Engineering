@@ -17,7 +17,7 @@ La inteligencia adicional (guardrails, cache semántico) se construye encima de 
 | Prompts versionados (`system.j2`, `user.j2`, `examples.j2`, `examples.yaml`, `loader.py`) | Hecho (WU4) |
 | Wrapper LLM (`app/services/llm_wrapper.py`), caché, router `POST /api/v1/estimate`, errores y trazabilidad | Hecho (WU5) |
 | Servicio de estimación (`app/services/estimation.py`): el pipeline entre el router y el wrapper, donde entran los guardrails | Hecho |
-| Guardrails de entrada (`app/services/guardrails.py`): inyección de prompt, datos personales y moderación de OpenAI, en los tres endpoints | Hecho (WU9 A) |
+| Guardrails de entrada (`app/guardrails/input.py`): inyección de prompt, datos personales y moderación de OpenAI, en los tres endpoints | Hecho (WU9 A) |
 | Cliente Streamlit | Hecho (WU6) |
 | Slice de punta a punta: formulario → API → proveedor → caché → formulario | Hecho (WU7) |
 | Salida estructurada: `StructuredResult` con Instructor sobre el Router, prompt `v3`, `POST /api/v1/estimate/structured`, interruptor en el formulario | Hecho, sin streaming (WU8) |
@@ -211,7 +211,9 @@ La batería corre en unos segundos, sin red y sin Redis (las llamadas al LLM se 
 - `test/test_e2e.py` — el slice de punta a punta (WU7) con todas las piezas reales: el formulario de Streamlit (`_build_payload` + `_estimate`), la API con su lifespan, el prompt `v2`, el wrapper con el Router de LiteLLM, la caché y la limpieza de etiquetas. Solo se simulan el proveedor (`mock_response`) y Redis (fakeredis). Cubre el camino normal (prompt que recibe el proveedor, texto limpio, trazabilidad), la caché (acierto, otra descripción, texto cacheado que se limpia al responder), la configuración (sin clave de respaldo, sin clave del primario, sin Redis) y los fallos (504 y 502 en castellano con el detalle solo en el log, un fallo que no queda en caché, un 422 que no llega al proveedor). Incluye el selector de versión: las opciones salen del `/health` real y la versión elegida decide el prompt que recibe el proveedor.
 
 - `test/test_estimation_service.py` — el servicio de estimación con un wrapper falso: la caché exacta (un acierto no renderiza ni llama al wrapper, emite el evento con `desde_cache`, la clave lleva modelo, versión, parámetros y la descripción ya oculta, entradas rotas cuentan como fallo, un rechazo o un error no tocan la caché), arma el prompt de la versión pedida, quita las etiquetas que el modelo copia, junta los avisos de los guardrails, los del wrapper y los totales que no cuadran, y deja los eventos de negocio; deja pasar tal cual los errores del proveedor, y un prompt que no se puede armar sale como error interno (500) y no como un 502 del proveedor. Con los guardrails: una descripción rechazada no llega al wrapper (422 en los tres endpoints), el prompt lleva la descripción con los datos personales ocultos, y la app arma los guardrails de la configuración una sola vez. El aviso de confianza baja (con el evento, en el umbral, no en un rechazo, también desde la caché) y una entrada de caché que ya no cumple la regla de horas se descarta.
-- `test/test_guardrails.py` — los guardrails de entrada, sin red ni claves: cada regla de inyección rechaza lo suyo y no una descripción normal (incluye variantes con tildes, mayúsculas, letras de ancho completo y caracteres invisibles), las etiquetas prohibidas cubren las que usan las plantillas, los datos personales se ocultan y las cifras del proyecto no (IBAN, tarjeta y DNI/NIE con su dígito de control), la moderación recibe el texto ya oculto, rechaza lo que marca y falla abierta, ningún evento lleva el texto de la descripción, y el adaptador de OpenAI se prueba contra un transporte HTTP falso. También la configuración: valores por defecto, vacío = no configurado, y qué queda apagado en cada caso.
+- `test/test_output_guardrails.py` — los avisos de salida (confianza baja con umbral configurable, totales que no cuadran, fuera de alcance), la configuración y el cableado por endpoint.
+- `test/test_detectors.py` — los detectores compartidos (normalización, datos personales con dígito de control).
+- `test/test_input_guardrails.py` — los guardrails de entrada, sin red ni claves: cada regla de inyección rechaza lo suyo y no una descripción normal (incluye variantes con tildes, mayúsculas, letras de ancho completo y caracteres invisibles), las etiquetas prohibidas cubren las que usan las plantillas, los datos personales se ocultan y las cifras del proyecto no (IBAN, tarjeta y DNI/NIE con su dígito de control), la moderación recibe el texto ya oculto, rechaza lo que marca y falla abierta, ningún evento lleva el texto de la descripción, y el adaptador de OpenAI se prueba contra un transporte HTTP falso. También la configuración: valores por defecto, vacío = no configurado, y qué queda apagado en cada caso.
 - `test/test_llm_wrapper.py` — el wrapper LLM:
   - **Claves:** cada deployment recibe la clave de su proveedor; si falta la del primario, `LLMConfigurationError` nombrando la variable; si falta la del respaldo, arranca solo con el primario, con aviso en el log y en `warnings`.
   - **Router y respaldo:** el Router tiene los dos modelos, y si el primario falla responde el de respaldo.
@@ -290,7 +292,9 @@ lidr_4/
 │   ├── test_frontend_rendered.py
 │   ├── test_e2e_rendered.py
 │   ├── test_estimation_service.py
-│   ├── test_guardrails.py
+│   ├── test_input_guardrails.py
+│   ├── test_output_guardrails.py
+│   ├── test_detectors.py
 │   ├── test_llm_wrapper.py
 │   ├── test_cache.py
 │   ├── test_estimate_endpoint.py
@@ -346,7 +350,7 @@ Lo que vive **fuera** de la versión (en código): el contrato (`EstimationReque
 
 **Tres capas.** El router (`app/routers/estimations.py`) solo traduce HTTP: la versión pedida en la query y los errores a 422/502/504. El servicio (`app/services/estimation.py`, `EstimationService`) es el pipeline: guardrails de entrada → caché exacta → (caché semántica, WU10) → render → LLM → (guardrail de salida, WU9 B) → escritura en las cachés, y deja los eventos de negocio y los avisos. El wrapper (`app/services/llm_wrapper.py`) solo habla con el proveedor: no guarda caché.
 
-**Guardrails de entrada (WU9 A).** Sobre la descripción, en este orden, en los tres endpoints (`app/services/guardrails.py`):
+**Guardrails de entrada (WU9 A).** Sobre la descripción, en este orden, en los tres endpoints (`app/guardrails/input.py`; los detectores puros están en `app/guardrails/detectors.py`):
 
 1. **Inyección de prompt** (regex, local): instrucciones dirigidas al modelo («ignora las instrucciones anteriores»), pedidos de revelar el prompt, cambios de rol y etiquetas o marcadores del propio prompt (`</project_description>`). **Rechaza** con 422; la regla que saltó queda en el log.
 2. **Datos personales** (regex y dígitos de control, local): email, teléfono, IBAN, tarjeta (Luhn), DNI/NIE, CUIT/CUIL. **Los oculta** con un marcador (`[EMAIL]`) y la estimación sigue, con un aviso en `warnings`. El prompt, la caché y el log ven solo el texto ya oculto.
@@ -357,7 +361,7 @@ Son heurísticas, no una garantía: una inyección redactada de otra forma o en 
 **Guardrails de salida (WU9 B).** Sobre la estimación, en los endpoints estructurados:
 
 1. **Horas contra el equipo (rechaza y re-pregunta).** Ninguna fase, ni el total, puede pasar de 40 h por persona y semana con todo el equipo trabajando (`team` suma las personas; las horas productivas de los prompts son 32). Es un validador del schema (`_hours_fit_team`): Instructor le devuelve el error al modelo, y agotados los intentos sale el 502 de siempre. Una entrada de la caché que ya no lo cumple cuenta como fallo y se vuelve a pedir.
-2. **Confianza baja (avisa).** Con confianza global entre 30 % (umbral de rechazo) y 70 %, la estimación se devuelve con un aviso en `warnings` y el evento `confianza_baja`. El aviso se calcula siempre, también con un acierto de caché (`app/services/output_guardrails.py`).
+2. **Confianza baja (avisa).** Con confianza global entre 30 % (umbral de rechazo) y 70 %, la estimación se devuelve con un aviso en `warnings` y el evento `confianza_baja`. El aviso se calcula siempre, también con un acierto de caché (`app/guardrails/output.py`). El umbral es `LOW_CONFIDENCE_WARN_PCT` y se apaga con `OUTPUT_GUARDRAILS_ENABLED=false` (solo avisos y eventos; las reglas del schema siguen).
 3. **Respuesta cortada (`IncompleteJSONError`).** Si el proveedor corta la respuesta por `max_tokens`, no se reintenta: con el mismo presupuesto se cortaría en el mismo punto y cada intento se paga. Sale un 502 con mensaje propio y el log lleva `max_tokens` y el coste gastado. Se arregla subiendo `LLM_MAX_TOKENS`.
 
 **Política de reintento.** Cada fallo tiene un dueño: una respuesta que no cumple el schema la re-pregunta Instructor (`STRUCTURED_MAX_RETRIES`); un fallo del proveedor lo reintenta el Router y, si no alcanza, responde el respaldo (`LLM_MAX_RETRIES`); una respuesta cortada no se reintenta. Nada se escribe en la caché si no fue una respuesta válida.
@@ -401,6 +405,8 @@ Referencia completa y comentada en `.env.example`. Las principales:
 | `STRUCTURED_MAX_RETRIES` | `2` | Veces que se vuelve a preguntar al modelo si la respuesta no cumple el schema. Cada intento se paga. Vale también para `/estimate/rendered` |
 | `RENDERED_PROMPT_VERSION` | `v4` | Versión por defecto de `/estimate/rendered`. Tiene que ser de salida renderizada; si no, ese endpoint responde 503 |
 | `GUARDRAILS_ENABLED` | `true` | `false` apaga todos los guardrails de entrada (deja `guardrails_desactivados` en el log). Para medir sin ellos, no para producción |
+| `OUTPUT_GUARDRAILS_ENABLED` | `true` | `false` apaga los avisos y eventos de salida (totales, confianza baja, fuera de alcance). No apaga las reglas del schema, que rechazan y re-preguntan |
+| `LOW_CONFIDENCE_WARN_PCT` | `70` | Confianza global (0-100) por debajo de la cual se avisa. `0` lo desactiva |
 | `MODERATION_ENABLED` | `true` | Moderación de OpenAI. Solo actúa si hay `OPENAI_API_KEY`; sin clave queda apagada y se avisa una vez en el log |
 | `MODERATION_MODEL` | `omni-moderation-latest` | Modelo de moderación |
 | `MODERATION_TIMEOUT` | `3.0` | Segundos que se espera a la moderación (reintentos incluidos). Pasado ese tiempo la descripción sigue |

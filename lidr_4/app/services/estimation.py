@@ -13,7 +13,7 @@ Tres capas, cada una con una sola responsabilidad:
 
 Pipeline, en este orden:
 
-1. guardrails de entrada (WU9 A, app/services/guardrails.py): rechazan la
+1. guardrails de entrada (WU9 A, app/guardrails/input.py): rechazan la
    inyección de prompt y el contenido que marca la moderación, y ocultan los
    datos personales. Corren antes de cualquier caché: una descripción rechazada
    no llega al proveedor ni se sirve desde la caché, y las cachés y el prompt
@@ -25,10 +25,12 @@ Pipeline, en este orden:
    necesita un embedding. Se busca por la descripción;
 4. render del prompt (plantilla versionada);
 5. llamada al wrapper (LLM, validación contra el schema);
-6. guardrail de salida (WU9 B, todavía no existe);
+6. guardrail de salida (WU9 B): lo que rechaza vive en el schema y lo valida el
+   wrapper con re-pregunta, así que acá solo llega una estimación válida;
 7. escritura en las cachés. Va después del guardrail de salida: no se guarda una
    estimación que se rechazó ("cachear después de validar", PLAN.md §8);
-8. eventos y avisos de la estimación (fuera de alcance, totales que no cuadran).
+8. avisos y eventos de la estimación (`OutputGuardrails`, app/guardrails/output.py):
+   fuera de alcance, totales que no cuadran, confianza baja.
 
 Un acierto de caché salta de 3 a 8: no hay render, llamada ni escritura, y el
 servicio deja el evento `estimacion_completada` con `desde_cache=True`. Las
@@ -50,11 +52,11 @@ import re
 import time
 from dataclasses import dataclass
 
+from app.guardrails import InputGuardrails, OutputGuardrails
 from app.prompts.loader import render_estimation_prompt
 from app.schemas.estimation import EstimationRequest
 from app.schemas.structured_estimation import RenderedResult, StructuredResult
 from app.services.cache import ExactCache, create_estimation_cache
-from app.services.guardrails import InputGuardrails
 from app.services.llm_wrapper import (
     LLMCallResult,
     LLMWrapper,
@@ -62,8 +64,6 @@ from app.services.llm_wrapper import (
     emit_completion,
     output_label,
 )
-from app.services.output_guardrails import check_output
-from app.tracing import emit
 
 # Los ejemplos del prompt envuelven cada estimación en <estimation>…</estimation>,
 # y el modelo a veces copia esas etiquetas en su respuesta. Son estructura del
@@ -108,10 +108,14 @@ class EstimationService:
         llm_wrapper: LLMWrapper,
         input_guardrails: InputGuardrails | None = None,
         cache: ExactCache | None = None,
+        output_guardrails: OutputGuardrails | None = None,
     ) -> None:
-        """Sin `input_guardrails` corre sin reglas de entrada; sin `cache`, sin caché."""
+        """Sin `input_guardrails` corre sin reglas de entrada; sin `cache`, sin caché; sin
+        `output_guardrails`, sin avisos ni eventos sobre la estimación (las reglas del
+        schema que rechazan corren igual: viven en el wrapper)."""
         self._llm_wrapper = llm_wrapper
         self._input_guardrails = input_guardrails
+        self._output_guardrails = output_guardrails
         self._cache = cache if cache is not None else create_estimation_cache(None, 0)
 
     async def estimate_text(self, request: EstimationRequest, version: str) -> TextEstimation:
@@ -152,8 +156,9 @@ class EstimationService:
         de la request.
 
         Los avisos son los de los guardrails de entrada (datos personales ocultados),
-        los del wrapper (respaldo no disponible) y los totales que no cuadran con la
-        suma de las fases, hasta la tolerancia del schema.
+        los del wrapper (respaldo no disponible) y los de salida (`OutputGuardrails`):
+        totales que no cuadran con la suma de las fases, hasta la tolerancia del
+        schema, y confianza baja.
         """
         # --- Input guardrails -------------------------------------------------------
         # WU9 A: antes de las cachés (exacta y semántica), del render y de la llamada. Un
@@ -185,43 +190,25 @@ class EstimationService:
             # rechazo coherente) ya lo validó el schema dentro del wrapper, con
             # re-pregunta: acá solo llega una estimación válida. La escritura en las
             # cachés, exacta y semántica, va después y es la única: no se guarda nada
-            # que el guardrail rechazó. Los avisos (`check_output`) se calculan
+            # que el guardrail rechazó. Los avisos (`OutputGuardrails`) se calculan
             # después, para que valgan también cuando la estimación sale de la caché.
 
             # ------------------------------------------------------------------------
             await self._cache.set(cache_key, _cache_entry(result))
 
-        if result.estimation.out_of_scope:
-            # No es un fallo: el modelo dijo que la descripción no alcanza. Queda en el
-            # log para medir cuántas descripciones llegan sin información suficiente.
-            emit(
-                __name__,
-                "estimacion_fuera_de_alcance",
-                prompt_version=version,
-                modelo=result.model,
-                confianza_pct=result.estimation.confidence_pct,
+        output_warnings = (
+            self._output_guardrails.check(
+                result.estimation, prompt_version=version, model=result.model
             )
-
-        discrepancies = result.estimation.total_discrepancies()
-        output_warnings = check_output(
-            result.estimation, prompt_version=version, model=result.model
+            if self._output_guardrails is not None
+            else []
         )
-        if discrepancies:
-            emit(
-                __name__,
-                "totales_no_cuadran",
-                level="warning",
-                prompt_version=version,
-                modelo=result.model,
-                detalle=discrepancies,
-            )
 
         return StructuredEstimation(
             call=result,
             warnings=[
                 *guardrail_warnings,
                 *self._llm_wrapper.warnings,
-                *discrepancies,
                 *output_warnings,
             ],
         )

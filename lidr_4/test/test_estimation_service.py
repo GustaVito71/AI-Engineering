@@ -25,6 +25,14 @@ from structlog.testing import capture_logs
 
 from app.config import get_settings
 from app.dependencies import get_input_guardrails, get_llm_wrapper
+from app.guardrails import (
+    DEFAULT_LOW_CONFIDENCE_WARN_PCT,
+    INJECTION_MESSAGE,
+    MODERATION_MESSAGE,
+    InputGuardrails,
+    InputGuardrailViolation,
+    OutputGuardrails,
+)
 from app.main import create_app
 from app.schemas.estimation import DetailLevel, EstimationRequest, OutputFormat, ProjectType
 from app.schemas.structured_estimation import (
@@ -40,14 +48,7 @@ from app.services.estimation import (
     StructuredEstimation,
     TextEstimation,
 )
-from app.services.guardrails import (
-    INJECTION_MESSAGE,
-    MODERATION_MESSAGE,
-    InputGuardrails,
-    InputGuardrailViolation,
-)
 from app.services.llm_wrapper import LLMCallResult, StructuredCallResult, StructuredOutputError
-from app.services.output_guardrails import LOW_CONFIDENCE_WARN_PCT
 
 DESCRIPCION = "Un SaaS B2B pequeño para gestionar el préstamo de equipos a empleados."
 SOLICITUD = EstimationRequest(
@@ -211,9 +212,9 @@ async def test_los_totales_que_no_cuadran_son_un_aviso_y_un_evento() -> None:
     wrapper = _WrapperFalso(warnings=("Sin respaldo.",), estimacion=descuadrada)
 
     with capture_logs() as logs:
-        resultado = await EstimationService(wrapper).estimate_structured(
-            SOLICITUD, "v3", StructuredResult
-        )
+        resultado = await EstimationService(
+            wrapper, output_guardrails=OutputGuardrails()
+        ).estimate_structured(SOLICITUD, "v3", StructuredResult)
 
     assert resultado.warnings == [
         "Sin respaldo.",
@@ -228,9 +229,9 @@ async def test_una_estimacion_fuera_de_alcance_deja_un_evento_y_no_es_un_fallo()
     wrapper = _WrapperFalso(estimacion=FUERA_DE_ALCANCE)
 
     with capture_logs() as logs:
-        resultado = await EstimationService(wrapper).estimate_structured(
-            SOLICITUD, "v3", StructuredResult
-        )
+        resultado = await EstimationService(
+            wrapper, output_guardrails=OutputGuardrails()
+        ).estimate_structured(SOLICITUD, "v3", StructuredResult)
 
     assert resultado.call.estimation.out_of_scope
     assert resultado.warnings == []
@@ -303,7 +304,7 @@ async def test_el_prompt_lleva_la_descripcion_con_los_datos_personales_ocultos()
 async def test_los_avisos_de_los_guardrails_van_antes_que_el_resto() -> None:
     descuadrada = {**ESTIMACION, "totals": {**ESTIMACION["totals"], "hours": 400}}
     wrapper = _WrapperFalso(warnings=("Sin respaldo.",), estimacion=descuadrada)
-    servicio = EstimationService(wrapper, InputGuardrails())
+    servicio = EstimationService(wrapper, InputGuardrails(), output_guardrails=OutputGuardrails())
 
     texto = await servicio.estimate_text(_con_descripcion(CON_EMAIL), "v2")
     estructurada = await servicio.estimate_structured(
@@ -688,7 +689,9 @@ CONFIANZA_BAJA = {**ESTIMACION, "confidence_pct": 40}
 
 
 async def test_una_confianza_baja_avisa_y_deja_el_evento() -> None:
-    servicio = EstimationService(_WrapperFalso(estimacion=CONFIANZA_BAJA))
+    servicio = EstimationService(
+        _WrapperFalso(estimacion=CONFIANZA_BAJA), output_guardrails=OutputGuardrails()
+    )
 
     with capture_logs() as logs:
         resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
@@ -700,15 +703,19 @@ async def test_una_confianza_baja_avisa_y_deja_el_evento() -> None:
 
 
 async def test_la_confianza_justo_en_el_umbral_no_avisa() -> None:
-    estimacion = {**ESTIMACION, "confidence_pct": LOW_CONFIDENCE_WARN_PCT}
-    servicio = EstimationService(_WrapperFalso(estimacion=estimacion))
+    estimacion = {**ESTIMACION, "confidence_pct": DEFAULT_LOW_CONFIDENCE_WARN_PCT}
+    servicio = EstimationService(
+        _WrapperFalso(estimacion=estimacion), output_guardrails=OutputGuardrails()
+    )
     resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
     assert resultado.warnings == []
 
 
 async def test_un_rechazo_no_lleva_aviso_de_confianza_baja() -> None:
     """Su confianza es baja por definición: ya dice «Fuera de alcance:»."""
-    servicio = EstimationService(_WrapperFalso(estimacion=FUERA_DE_ALCANCE))
+    servicio = EstimationService(
+        _WrapperFalso(estimacion=FUERA_DE_ALCANCE), output_guardrails=OutputGuardrails()
+    )
     with capture_logs() as logs:
         resultado = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
     assert resultado.warnings == []
@@ -718,7 +725,9 @@ async def test_un_rechazo_no_lleva_aviso_de_confianza_baja() -> None:
 async def test_el_aviso_de_confianza_baja_tambien_sale_de_la_cache() -> None:
     """El aviso no se guarda con la entrada: se calcula siempre."""
     wrapper = _WrapperFalso(estimacion=CONFIANZA_BAJA)
-    servicio = EstimationService(wrapper, cache=_CacheMemoria())
+    servicio = EstimationService(
+        wrapper, cache=_CacheMemoria(), output_guardrails=OutputGuardrails()
+    )
     primero = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
     segundo = await servicio.estimate_structured(SOLICITUD, "v3", StructuredResult)
 

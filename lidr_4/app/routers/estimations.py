@@ -41,6 +41,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.config import LLMConfigurationError, get_settings
 from app.dependencies import get_estimation_service
+from app.guardrails import InputGuardrailViolation
 from app.prompts.loader import (
     OUTPUT_RENDERED,
     OUTPUT_STRUCTURED,
@@ -55,7 +56,6 @@ from app.schemas.structured_estimation import (
     StructuredResult,
 )
 from app.services.estimation import EstimationService, PromptRenderError, StructuredEstimation
-from app.services.guardrails import InputGuardrailViolation
 from app.services.llm_wrapper import IncompleteJSONError, StructuredOutputError
 from app.tracing import emit
 

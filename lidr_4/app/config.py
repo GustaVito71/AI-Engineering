@@ -92,6 +92,16 @@ def _empty_is_true(value: object) -> object:
     return True if value == "" else value
 
 
+# Confianza global por debajo de la cual la estimación lleva un aviso (guardrails de
+# salida). El umbral de rechazo (30) vive en el schema: este va por encima.
+DEFAULT_LOW_CONFIDENCE_WARN_PCT = 70
+
+
+def _empty_is_default_confidence(value: object) -> object:
+    """Vacío = "no configurado" = el umbral por defecto, como `_empty_is_true`."""
+    return DEFAULT_LOW_CONFIDENCE_WARN_PCT if value == "" else value
+
+
 # El contrato de `description` vive en el Field de
 # app.schemas.estimation.EstimationRequest. Se replica acá porqueSettings no
 # puede importar al schema (sería un ciclo: el schema importa get_settings) y
@@ -193,7 +203,7 @@ class Settings(BaseSettings):
 
     # --- Input guardrails -------------------------------------------------------
     # Reglas que corren sobre la descripción antes del render y de la caché (ver
-    # app/services/guardrails.py). GUARDRAILS_ENABLED=false las apaga todas, con
+    # app/guardrails/input.py). GUARDRAILS_ENABLED=false las apaga todas, con
     # un evento en el log; sirve para medir sin ellas, no para producción.
     guardrails_enabled: Annotated[bool, BeforeValidator(_empty_is_true)] = True
     # Moderación de OpenAI (el endpoint no se cobra). Necesita OPENAI_API_KEY: sin
@@ -202,6 +212,19 @@ class Settings(BaseSettings):
     moderation_enabled: Annotated[bool, BeforeValidator(_empty_is_true)] = True
     moderation_model: str = "omni-moderation-latest"
     moderation_timeout: float = 3.0
+
+    # --- Output guardrails ------------------------------------------------------
+    # Avisos y eventos sobre la estimación ya validada (app/guardrails/output.py):
+    # totales que no cuadran, confianza baja, fuera de alcance. OUTPUT_GUARDRAILS_ENABLED=false
+    # los apaga, con un evento en el log. NO apaga las reglas del schema que rechazan y
+    # re-preguntan (horas contra el equipo, totales a más de 5 %...): esas viven en el
+    # contrato de la respuesta, no son un interruptor.
+    output_guardrails_enabled: Annotated[bool, BeforeValidator(_empty_is_true)] = True
+    # Por debajo de esta confianza global (y por encima del umbral de rechazo, 30) la
+    # estimación se devuelve con un aviso. 0 desactiva solo este aviso.
+    low_confidence_warn_pct: Annotated[int, BeforeValidator(_empty_is_default_confidence)] = (
+        DEFAULT_LOW_CONFIDENCE_WARN_PCT
+    )
 
     # --- Frontend. URL base del API para Streamlit (cliente HTTP separado).
     estimator_api_base_url: str = "http://localhost:8001"
@@ -315,6 +338,17 @@ class Settings(BaseSettings):
         if self.moderation_timeout <= 0:
             raise ValueError(
                 f"MODERATION_TIMEOUT={self.moderation_timeout} tiene que ser mayor que cero."
+            )
+        return self
+
+    # --- Output guardrails -------------------------------------------------------
+    @model_validator(mode="after")
+    def validate_output_guardrails(self) -> "Settings":
+        """Un umbral fuera de 0 a 100 no es una confianza: mejor romper al arrancar."""
+        if not 0 <= self.low_confidence_warn_pct <= 100:
+            raise ValueError(
+                f"LOW_CONFIDENCE_WARN_PCT={self.low_confidence_warn_pct} tiene que estar "
+                "entre 0 y 100."
             )
         return self
 
