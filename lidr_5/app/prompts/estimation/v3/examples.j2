@@ -1,0 +1,80 @@
+{#- Ejemplos few-shot de la versión v3. Los incluye system.j2.
+
+    Los datos (fases, equipos, tarifas, redondeo) están en examples.yaml y las
+    horas, costes y totales los calcula loader.py, igual que en v2. Este archivo
+    solo arma, con esos datos, el JSON que el modelo tiene que devolver, con el
+    nivel de detalle pedido (detail_level). El filtro `json` lo registra
+    loader.py: JSON indentado y con tildes legibles.
+
+    El último ejemplo es un rechazo («Fuera de alcance:»): una sola fase sin
+    equipo, con todo en cero. Enseña la forma que exige el schema cuando la
+    descripción no alcanza para estimar. -#}
+
+{#- Supuestos y riesgos de ejemplo: los mismos textos que muestra v2. -#}
+{%- set base_assumptions = [
+    "Composición de equipo estándar para esta fase",
+    "Sin dependencias externas que bloqueen el avance",
+] -%}
+
+{%- set detailed_risks = [
+    {"risk": "Ampliación del alcance por cambios pedidos por los interesados", "mitigation": "Cerrar el alcance de la fase antes de empezarla y tratar cada cambio como una petición aparte"},
+    {"risk": "Disponibilidad de recursos en los períodos de mayor carga", "mitigation": "Reservar el equipo de la fase con antelación"},
+    {"risk": "Complejidad de integración con los sistemas existentes", "mitigation": "Probar la integración al inicio de la fase con un caso real"},
+] -%}
+
+{%- macro estimation(ex, detail_level) -%}
+{%- set phases = [] -%}
+{%- for p in ex.phases -%}
+{%- if detail_level == "summary" or ex.phases | length == 1 and ex.team_headcount | length == 0 -%}
+{#- Resumen, o el ejemplo de rechazo (una fase sin equipo): sin supuestos ni riesgos. -#}
+{%- set assumptions = [] -%}
+{%- elif detail_level == "medium" -%}
+{%- set assumptions = base_assumptions -%}
+{%- else -%}
+{%- set timeframe = "1 semana alcanza" if p.duration_weeks == 1 else p.duration_weeks ~ " semanas alcanzan" -%}
+{%- set assumptions = base_assumptions + [timeframe ~ " para el alcance previsto"] -%}
+{%- endif -%}
+{%- set _ = phases.append({
+    "name": p.phase,
+    "summary": p.summary,
+    "duration_weeks": p.duration_weeks,
+    "hours": p.hours,
+    "cost_eur": p.cost_eur,
+    "confidence_pct": p.confidence_pct,
+    "assumptions": assumptions,
+    "risks": detailed_risks if detail_level == "detailed" and assumptions else [],
+}) -%}
+{%- endfor -%}
+{%- set team = [] -%}
+{%- for role, hc in ex.team_headcount.items() -%}
+{%- set _ = team.append({"role": rates[role].label, "headcount": hc}) -%}
+{%- endfor -%}
+{{ {
+    "phases": phases,
+    "team": team,
+    "totals": {
+        "hours": ex.totals.total_hours,
+        "cost_eur": ex.totals.total_cost_eur,
+        "duration_weeks": ex.totals.total_duration_weeks,
+    },
+    "summary": ex.summary,
+    "confidence_pct": ex.confidence_pct,
+} | json }}
+{%- endmacro -%}
+
+<examples>
+Los siguientes ejemplos muestran el nivel de rigor y la estructura que se esperan de una estimación bien hecha. Son salidas de referencia sintéticas, generadas para calibrar: no hay que copiar sus números, solo usarlos como referencia de calibración.
+{% for ex in examples %}
+<example>
+<project_type>
+{{ ex.project_type }}
+</project_type>
+<project_description>
+{{ ex.project_description }}
+</project_description>
+<estimation>
+{{ estimation(ex, detail_level) }}
+</estimation>
+</example>
+{% endfor %}
+</examples>

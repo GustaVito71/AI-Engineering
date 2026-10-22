@@ -1,0 +1,182 @@
+[
+  {
+    "project_type": "migración de API",
+    "hours_estimated": 320,
+    "hours_actual": 484,
+    "deviation_pct": 51.4,
+    "risks_materialized": [
+      "dependencias de terceros desactualizadas",
+      "retrasos en la aprobación de QA"
+    ]
+  },
+  {
+    "project_type": "e-commerce",
+    "hours_estimated": 600,
+    "hours_actual": 550,
+    "deviation_pct": -8.4,
+    "risks_materialized": [
+      "dependencias de terceros desactualizadas",
+      "decisiones de negocio pendientes al iniciar el desarrollo",
+      "falta de documentación del sistema legado"
+    ]
+  },
+  {
+    "project_type": "app móvil",
+    "hours_estimated": 80,
+    "hours_actual": 73,
+    "deviation_pct": -9.0,
+    "risks_materialized": [
+      "retrasos en la aprobación de QA",
+      "falta de documentación del sistema legado"
+    ]
+  },
+  {
+    "project_type": "portal interno",
+    "hours_estimated": 120,
+    "hours_actual": 148,
+    "deviation_pct": 23.6,
+    "risks_materialized": [
+      "subestimación de la complejidad de la migración de datos"
+    ]
+  },
+  {
+    "project_type": "integración con ERP",
+    "hours_estimated": 120,
+    "hours_actual": 182,
+    "deviation_pct": 51.3,
+    "risks_materialized": [
+      "subestimación de la complejidad de la migración de datos",
+      "dependencias de terceros desactualizadas",
+      "integración con un proveedor externo más lenta de lo previsto"
+    ]
+  },
+  {
+    "project_type": "dashboard de reportes",
+    "hours_estimated": 80,
+    "hours_actual": 123,
+    "deviation_pct": 53.3,
+    "risks_materialized": [
+      "decisiones de negocio pendientes al iniciar el desarrollo"
+    ]
+  },
+  {
+    "project_type": "sistema de pagos",
+    "hours_estimated": 160,
+    "hours_actual": 168,
+    "deviation_pct": 5.3,
+    "risks_materialized": [
+      "decisiones de negocio pendientes al iniciar el desarrollo"
+    ]
+  },
+  {
+    "project_type": "migración de base de datos",
+    "hours_estimated": 120,
+    "hours_actual": 150,
+    "deviation_pct": 25.0,
+    "risks_materialized": [
+      "cambios de alcance a mitad de proyecto",
+      "retrasos en la aprobación de QA",
+      "falta de documentación del sistema legado"
+    ]
+  },
+  {
+    "project_type": "portal de autoservicio",
+    "hours_estimated": 320,
+    "hours_actual": 294,
+    "deviation_pct": -8.2,
+    "risks_materialized": [
+      "retrasos en la aprobación de QA",
+      "dependencias de terceros desactualizadas",
+      "falta de documentación del sistema legado"
+    ]
+  },
+  {
+    "project_type": "chatbot de soporte",
+    "hours_estimated": 480,
+    "hours_actual": 636,
+    "deviation_pct": 32.6,
+    "risks_materialized": [
+      "rotación de personal clave",
+      "datos de producción con calidad menor a la esperada"
+    ]
+  },
+  {
+    "project_type": "sistema de notificaciones",
+    "hours_estimated": 480,
+    "hours_actual": 529,
+    "deviation_pct": 10.3,
+    "risks_materialized": [
+      "cambios de alcance a mitad de proyecto"
+    ]
+  },
+  {
+    "project_type": "rediseño de frontend",
+    "hours_estimated": 200,
+    "hours_actual": 181,
+    "deviation_pct": -9.3,
+    "risks_materialized": [
+      "decisiones de negocio pendientes al iniciar el desarrollo",
+      "datos de producción con calidad menor a la esperada"
+    ]
+  },
+  {
+    "project_type": "API pública",
+    "hours_estimated": 320,
+    "hours_actual": 436,
+    "deviation_pct": 36.1,
+    "risks_materialized": [
+      "subestimación de la complejidad de la migración de datos",
+      "retrasos en la aprobación de QA"
+    ]
+  },
+  {
+    "project_type": "sistema de inventario",
+    "hours_estimated": 120,
+    "hours_actual": 145,
+    "deviation_pct": 20.8,
+    "risks_materialized": [
+      "rotación de personal clave"
+    ]
+  },
+  {
+    "project_type": "plataforma de reservas",
+    "hours_estimated": 160,
+    "hours_actual": 240,
+    "deviation_pct": 50.3,
+    "risks_materialized": [
+      "dependencias de terceros desactualizadas",
+      "retrasos en la aprobación de QA"
+    ]
+  },
+  {
+    "project_type": "integración con CRM",
+    "hours_estimated": 600,
+    "hours_actual": 751,
+    "deviation_pct": 25.1,
+    "risks_materialized": [
+      "rotación de personal clave",
+      "subestimación de la complejidad de la migración de datos"
+    ]
+  },
+  {
+    "project_type": "sistema de autenticación único (SSO)",
+    "hours_estimated": 480,
+    "hours_actual": 603,
+    "deviation_pct": 25.6,
+    "risks_materialized": [
+      "retrasos en la aprobación de QA",
+      "subestimación de la complejidad de la migración de datos"
+    ]
+  },
+  {
+    "project_type": "exportador de reportes a Excel",
+    "hours_estimated": 240,
+    "hours_actual": 284,
+    "deviation_pct": 18.2,
+    "risks_materialized": [
+      "retrasos en la aprobación de QA",
+      "dependencias de terceros desactualizadas",
+      "indisponibilidad del ambiente de pruebas"
+    ]
+  }
+]
