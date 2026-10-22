@@ -11,3 +11,6 @@ venv/
 
 # Local Pi runtime state
 .atl/
+
+#Otros proyectos
+winterm/

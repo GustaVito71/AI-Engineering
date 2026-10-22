@@ -1,0 +1,5 @@
+# Dependencias del backend de negocio simulado (Paso 12). Deliberadamente mínimas y
+# separadas de las del servicio de IA: este servicio representa un sistema externo
+# cualquiera, no forma parte del mismo proyecto Python.
+fastapi>=0.115
+uvicorn[standard]>=0.30

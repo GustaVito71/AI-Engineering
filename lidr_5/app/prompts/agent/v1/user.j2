@@ -1,0 +1,12 @@
+{#- Mensaje de usuario del bucle agéntico: la descripción del proyecto y los adjuntos, ambos
+    escapados (`escape_tags`) para que un texto con una etiqueta de cierre no pueda salirse
+    de su bloque. Variables: transcript, attachments_block. -#}
+<project_description>
+{{ transcript | escape_tags }}
+</project_description>
+{% if attachments_block %}
+
+{{ attachments_block }}
+{% endif %}
+
+Decide si necesitas herramientas para reunir datos antes de estimar.

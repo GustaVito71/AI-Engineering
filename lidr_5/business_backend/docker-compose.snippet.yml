@@ -1,0 +1,15 @@
+# Bloque para agregar al docker-compose.yml del proyecto (servicio nuevo, Paso 12).
+# No se aplica solo: cópialo dentro de `services:` de tu docker-compose.yml y ajusta
+# lo que corresponda a tu archivo (red, nombres de los otros servicios, etc.).
+#
+# El servicio de IA (api) necesita además estas dos variables en su entorno:
+#   BUSINESS_API_URL=http://business-backend:8003
+#   BUSINESS_API_KEY=<la misma clave que BUSINESS_API_KEY de este servicio>
+
+  business-backend:
+    build: ./business_backend
+    ports:
+      - "8003:8003"
+    environment:
+      # Clave simulada: en un backend real esto sería un secreto gestionado aparte.
+      - BUSINESS_API_KEY=${BUSINESS_API_KEY:-clave-de-ejemplo-paso12}
