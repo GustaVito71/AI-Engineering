@@ -21,7 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 from structlog.testing import capture_logs
 from test_attachments import hacer_docx, hacer_pdf
-from test_estimate_structured_endpoint import _WrapperFalso
+from test_estimate_structured_endpoint import ESTIMACION, _WrapperFalso
 
 from app.config import get_settings
 from app.dependencies import get_llm_wrapper, get_metadata_extractor
@@ -231,3 +231,24 @@ def test_el_log_no_incluye_el_contenido(entorno) -> None:
     assert eventos[0]["attachments_with_text"] == 1
     assert "secreto-del-adjunto" not in str(logs)
     assert TRANSCRIPCION not in str(logs)
+
+
+# --- tier_view (adaptación estructural por tier) ----------------------------------------------
+
+
+def test_tier_view_null_sin_que_ninguna_regla_del_tier_se_cumpla(entorno) -> None:
+    """`TRANSCRIPCION` no dispara ninguna regla de `resolve_tier`: tier `default`, sin vista."""
+    cliente, _wrapper, sid = entorno
+    respuesta = estimar(cliente, sid)
+    assert respuesta.json()["tier_view"] is None
+
+
+def test_tier_view_developer_cuando_el_texto_dispara_esa_regla(entorno) -> None:
+    """Dos palabras técnicas distintas disparan `technical_audience` → tier developer."""
+    cliente, _wrapper, sid = entorno
+    texto = "Lo vamos a correr en docker y orquestar con kubernetes."
+    respuesta = estimar(cliente, sid, transcript=texto)
+    cuerpo = respuesta.json()
+    assert cuerpo["tier_view"].keys() == {"phases", "team", "total_hours"}
+    assert cuerpo["tier_view"]["total_hours"] == ESTIMACION["totals"]["hours"]
+    assert cuerpo["estimation"]["phases"]  # la respuesta de siempre sigue completa
