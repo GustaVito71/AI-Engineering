@@ -65,7 +65,8 @@ from app.schemas.acb import ACBResponse
 from app.schemas.critic import CriticFeedback
 from app.schemas.estimation import DetailLevel, EstimationRequest, OutputFormat, ProjectType
 from app.schemas.session import CreateSessionResponse, SessionStateResponse
-from app.schemas.structured_estimation import StructuredEstimationResponse, StructuredResult
+from app.schemas.structured_estimation import StructuredResult
+from app.schemas.tier_views import TieredEstimationResponse
 from app.services.attachments import (
     MAX_FILE_BYTES,
     MAX_FILES,
@@ -82,6 +83,7 @@ from app.services.boss import Boss, Draft
 from app.services.critic import Critic, CriticReview
 from app.services.estimation import EstimationService
 from app.services.metadata_extractor import MetadataExtractor
+from app.services.tier_projection import project_to_tier
 from app.sessions import ProjectMetadata, Session, SessionNotFoundError, SessionStore
 from app.sessions.compression import CompressionTools, apply_compression
 from app.sessions.tier_resolver import Tier, resolve_tier
@@ -158,14 +160,16 @@ async def get_session_state(
 
 @router.post(
     "/{session_id}/estimate",
-    response_model=StructuredEstimationResponse,
+    response_model=TieredEstimationResponse,
     summary="Estima a partir de una transcripción y documentos adjuntos",
     description=(
         "Recibe un formulario multipart con la `transcript` (20 a 80.000 caracteres) y, "
         "opcionalmente, hasta 5 `attachments` (.pdf, .docx, .txt o .md, de hasta 10 MB "
         "cada uno). El texto de los adjuntos se extrae en el servicio y se agrega al "
         "prompt. Un adjunto sin texto o ilegible no hace fallar la petición: queda en "
-        "`warnings`. Con `?prompt_version=v3` se elige la versión del prompt."
+        "`warnings`. Con `?prompt_version=v3` se elige la versión del prompt. La "
+        "respuesta trae, además de `estimation`, la vista propia del tier resuelto "
+        "para este turno en `tier_view` (null con tier `default`)."
     ),
 )
 async def estimate_session(
@@ -185,7 +189,7 @@ async def estimate_session(
     extractor: MetadataExtractor | None = Depends(get_metadata_extractor),
     compression: CompressionTools = Depends(get_compression_tools),
     registry: ToolRegistry = Depends(get_tool_registry),
-) -> StructuredEstimationResponse:
+) -> TieredEstimationResponse:
     """Estima un proyecto a partir de la transcripción y de los adjuntos.
 
     Orden de las comprobaciones, de la más barata a la más cara: sesión existente (404),
@@ -236,11 +240,12 @@ async def estimate_session(
         tier_rule=tier_rule,
     )
     _emit_turn("estimacion_conversacional", session_id, turn, settings_version=turn.version)
-    return StructuredEstimationResponse(
+    return TieredEstimationResponse(
         estimation=estimation.call.estimation,
         prompt_version=estimation.call.prompt_version,
         cached=False,
         warnings=[*estimation.warnings, *memory_warnings],
+        tier_view=project_to_tier(estimation.call.estimation, resolved_tier.value),
     )
 
 
@@ -253,7 +258,9 @@ async def estimate_session(
         "`developer` o `default`). El actor estima, un crítico de otro proveedor revisa "
         "y el jefe acepta, vuelve a pedir una estimación con el feedback o entrega la "
         "última con salvedades. Hace como máximo `BOSS_MAX_ITERATIONS` vueltas de dos "
-        "llamadas cada una. La respuesta trae la estimación y, en `acb`, la traza."
+        "llamadas cada una. La respuesta trae la estimación, en `acb` la traza, y en "
+        "`tier_view` la vista propia del tier resuelto para este turno (null con tier "
+        "`default`)."
     ),
 )
 async def estimate_session_acb(
@@ -375,6 +382,7 @@ async def estimate_session_acb(
         cached=False,
         warnings=[*outcome.draft.payload.warnings, *memory_warnings],
         acb=outcome.trace,
+        tier_view=project_to_tier(outcome.result, resolved_tier.value),
     )
 
 

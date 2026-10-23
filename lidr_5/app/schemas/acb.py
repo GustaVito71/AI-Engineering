@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.critic import MAX_ISSUES
 from app.schemas.structured_estimation import StructuredEstimationResponse, StructuredResult
+from app.schemas.tier_views import TierView
 
 # Cuando el jefe entrega un borrador con salvedades antepone una nota al resumen. La nota
 # empieza con esta marca y termina con una línea en blanco; después sigue el resumen que
@@ -124,3 +125,11 @@ class ACBResponse(StructuredEstimationResponse):
         return value
 
     acb: BossTrace = Field(description="Qué hizo el crítico y qué decidió el jefe en cada vuelta.")
+    tier_view: TierView | None = Field(
+        default=None,
+        description=(
+            "Vista de salida propia del tier resuelto para este turno "
+            "(`DeveloperView`, `PmView` o `ExecutiveView`); `None` con tier "
+            "`default` o estimación fuera de alcance."
+        ),
+    )

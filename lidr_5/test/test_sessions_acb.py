@@ -287,6 +287,36 @@ def test_un_tier_invalido_es_un_422(montar) -> None:
     assert wrapper.llamadas == []
 
 
+def test_tier_view_viaja_en_la_respuesta_segun_el_tier(montar) -> None:
+    """`tier_view` trae la vista propia del tier pedido, además de `estimation` de siempre."""
+    critico = _CriticoFalso(indep("accept"))
+    cliente, _wrapper, _extractor, sid = montar(critico)
+
+    respuesta = estimar_acb(cliente, sid, data={"tier": "executive"})
+
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert cuerpo["estimation"]["phases"]  # la forma de siempre no desaparece
+    assert cuerpo["tier_view"].keys() == {
+        "headline_cost_eur",
+        "headline_duration_weeks",
+        "confidence_level",
+        "top_risks",
+        "recommendation",
+    }
+    assert cuerpo["tier_view"]["headline_cost_eur"] == ESTIMACION["totals"]["cost_eur"]
+
+
+def test_sin_tier_tier_view_es_null(montar) -> None:
+    """Con tier `default` (sin pedir ninguno) no hay vista propia: `tier_view` es `null`."""
+    critico = _CriticoFalso(indep("accept"))
+    cliente, _wrapper, _extractor, sid = montar(critico)
+
+    respuesta = estimar_acb(cliente, sid)
+
+    assert respuesta.json()["tier_view"] is None
+
+
 # --- Entrada y errores -----------------------------------------------------------------------
 
 
