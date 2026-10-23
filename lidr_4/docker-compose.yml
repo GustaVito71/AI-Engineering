@@ -1,0 +1,64 @@
+# Todo el proyecto en Docker: Redis, la API y el frontend Streamlit.
+#
+#   docker compose up --build -d     # construir y levantar
+#   docker compose logs -f api       # logs de la API
+#   docker compose down              # parar todo
+#
+# Las claves y la configuración salen del .env (env_file); nunca entran a la
+# imagen. Dentro de Docker cada servicio se alcanza por su nombre, así que se
+# pisan dos valores del .env: REDIS_URL y ESTIMATOR_API_BASE_URL.
+#
+# Hacia afuera solo se publican la API y el frontend, y solo en 127.0.0.1:
+# nada queda accesible desde la red local.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  api:
+    build: .
+    # 0.0.0.0 dentro del contenedor: con 127.0.0.1 no se lo alcanza ni desde el
+    # frontend ni desde el puerto publicado.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  frontend:
+    build: .
+    command:
+      - streamlit
+      - run
+      - streamlit_app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    environment:
+      ESTIMATOR_API_BASE_URL: http://api:8001
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

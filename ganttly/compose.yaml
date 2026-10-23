@@ -1,0 +1,16 @@
+services:
+  api:
+    build:
+      context: .
+      target: api
+    container_name: ganttly-api
+    ports:
+      - "8000:8000"
+
+  ui:
+    build:
+      context: .
+      target: ui
+    container_name: ganttly-ui
+    ports:
+      - "8501:8501"

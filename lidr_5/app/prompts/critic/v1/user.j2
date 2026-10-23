@@ -1,0 +1,48 @@
+<original_transcript>
+{{ transcript | escape_tags }}
+</original_transcript>
+{% if attachments_block %}
+
+{{ attachments_block }}
+{% endif %}
+{% if project_metadata %}
+
+<project_metadata>
+{% if project_metadata.project_name %}
+- Nombre del proyecto: {{ project_metadata.project_name | prompt_data }}
+{% endif %}
+{% if project_metadata.assumed_team_size %}
+- Tamaño de equipo asumido: {{ project_metadata.assumed_team_size }} personas en total, de todos los roles
+{% endif %}
+{% if project_metadata.mentioned_technologies %}
+- Tecnologías mencionadas: {{ project_metadata.mentioned_technologies | map("prompt_data") | join(", ") }}
+{% endif %}
+{% if project_metadata.agreed_scope %}
+- Alcance acordado: {{ project_metadata.agreed_scope | prompt_data }}
+{% endif %}
+{% for constraint in project_metadata.explicit_constraints %}
+- Restricción explícita: {{ constraint | prompt_data }}
+{% endfor %}
+{% for option in project_metadata.rejected_options %}
+- Opción descartada: {{ option | prompt_data }}
+{% endfor %}
+{% for fact in project_metadata.other_facts %}
+- Otro hecho: {{ fact | prompt_data }}
+{% endfor %}
+</project_metadata>
+{% else %}
+
+<project_metadata>
+Sin hechos conocidos todavía.
+</project_metadata>
+{% endif %}
+
+<audience_tier>{{ tier }}</audience_tier>
+
+<requested_detail_level>{{ detail_level }}</requested_detail_level>
+
+<estimation_under_review>
+{{ result_json | escape_tags }}
+</estimation_under_review>
+
+Audita esta estimación y devuelve el objeto CriticFeedback. Sé específico en `field_path`.
