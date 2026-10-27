@@ -1,0 +1,13 @@
+caso,metrica,aprobado,motivo,turnos,coste_usd_total,latencia_s_total
+golden-01,schema_adherence,1,"5 fases, forma correcta",1,0.00597,16.2
+golden-01,cost_bounds,1,$0.00597 en 1 turno(s),1,0.00597,16.2
+golden-01,content_recall,1,todos los hechos aparecen,1,0.00597,16.2
+golden-04,schema_adherence,1,"5 fases, forma correcta",1,0.002859,10.74
+golden-04,cost_bounds,1,$0.00286 en 1 turno(s),1,0.002859,10.74
+golden-04,content_recall,1,todos los hechos aparecen,1,0.002859,10.74
+golden-07,schema_adherence,1,"5 fases, forma correcta",1,0.002781,9.16
+golden-07,cost_bounds,1,$0.00278 en 1 turno(s),1,0.002781,9.16
+golden-07,content_recall,1,todos los hechos aparecen,1,0.002781,9.16
+golden-10,schema_adherence,1,"5 fases, forma correcta",1,0.003154,10.46
+golden-10,cost_bounds,1,$0.00315 en 1 turno(s),1,0.003154,10.46
+golden-10,content_recall,1,todos los hechos aparecen,1,0.003154,10.46

@@ -43,6 +43,7 @@ hay un máximo de `MAX_SESSIONS` vivas (se descarta la menos usada). Ver `app/se
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -82,6 +83,7 @@ from app.services.attachments import (
 from app.services.boss import Boss, Draft
 from app.services.critic import Critic, CriticReview
 from app.services.estimation import EstimationService
+from app.services.llm_wrapper import StructuredCallResult
 from app.services.metadata_extractor import MetadataExtractor
 from app.services.tier_projection import project_to_tier
 from app.sessions import ProjectMetadata, Session, SessionNotFoundError, SessionStore
@@ -220,6 +222,7 @@ async def estimate_session(
         attachments_block, extra_warnings = await _turn_context(
             turn, settings, history, registry, service
         )
+        start = time.perf_counter()
         estimation = await service.estimate_conversation(
             turn.request,
             turn.version,
@@ -229,6 +232,7 @@ async def estimate_session(
             tier=resolved_tier.value,
             history=history,
         )
+    latency_ms = round((time.perf_counter() - start) * 1000, 1)
 
     memory_warnings = await _record_turn(
         session,
@@ -240,6 +244,13 @@ async def estimate_session(
         tier_rule=tier_rule,
     )
     _emit_turn("estimacion_conversacional", session_id, turn, settings_version=turn.version)
+    _emit_turn_observed(
+        session,
+        turn,
+        tier=resolved_tier,
+        call=estimation.call,
+        latency_ms=latency_ms,
+    )
     return TieredEstimationResponse(
         estimation=estimation.call.estimation,
         prompt_version=estimation.call.prompt_version,
@@ -512,6 +523,7 @@ async def _record_turn(
         user=transcript[:MAX_HISTORY_USER_CHARS],
         assistant=_describe_estimation(estimation),
     )
+    session.turns_total += 1
     session.last_tier, session.last_tier_rule = tier.value, tier_rule
     # Lo que salió de la ventana no se olvida: pasa a anclas (si es un compromiso) o al
     # resumen acumulado. Un fallo del resumidor solo agrega un aviso.
@@ -535,6 +547,48 @@ def _emit_turn(event: str, session_id: str, turn: _Turn, *, settings_version: st
         transcript_chars=len(turn.transcript),
         attachments_received=len(turn.extracted),
         attachments_with_text=sum(1 for a in turn.extracted if a.text),
+    )
+
+
+def _emit_turn_observed(
+    session: Session,
+    turn: _Turn,
+    *,
+    tier: Tier,
+    call: StructuredCallResult,
+    latency_ms: float,
+) -> None:
+    """Evento `turn_observed`: todo lo que describe un turno, en un único registro del log.
+
+    Lo emite `estimate_session` una vez por turno exitoso, después de comprimir la memoria,
+    así que la ventana y las anclas que registra son las de después del turno. Reúne en un
+    solo evento datos que antes salían sueltos, para poder extraer una tabla en una pasada.
+    Solo lleva cantidades, nunca el contenido de la conversación.
+
+    `cache_hit_kind` es siempre "none": el camino conversacional no usa caché (ver
+    `EstimationService.estimate_conversation`). `tokens_in`, `tokens_out` y `cost_usd` son los
+    de la llamada del actor, sumando todos sus intentos; no incluyen el extractor de memoria
+    ni el resumidor, que emiten sus propios eventos. `latency_ms` mide solo la llamada al
+    servicio de estimación.
+    """
+    attachments_total_chars = sum(len(a.text or "") for a in turn.extracted)
+    history = session.history
+    emit(
+        __name__,
+        "turn_observed",
+        turn_index=session.turns_total,
+        session_id=session.session_id,
+        enriched_transcript_chars=len(turn.transcript) + attachments_total_chars,
+        attachments_total_chars=attachments_total_chars,
+        messages_in_window=len(history.messages),
+        anchors_count=len(history.anchors),
+        summary_chars=len(history.summary or ""),
+        tokens_in=call.prompt_tokens,
+        tokens_out=call.completion_tokens,
+        cost_usd=call.cost_usd,
+        latency_ms=latency_ms,
+        cache_hit_kind="none",
+        last_resolved_tier=tier.value,
     )
 
 

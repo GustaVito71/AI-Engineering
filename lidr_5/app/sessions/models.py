@@ -324,6 +324,9 @@ class Session(BaseModel):
     # para mostrarla; cada turno la vuelve a calcular.
     last_tier: str | None = None
     last_tier_rule: str | None = None
+    # Turnos registrados desde que nació la sesión. A diferencia de `history` (que solo guarda
+    # la ventana), este contador nunca baja: numera cada turno en el evento `turn_observed`.
+    turns_total: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=_now)
     # Última vez que alguien usó la sesión. Sirve para que el almacén la haga caducar
     # (si pasa mucho tiempo sin uso) y para saber cuál desalojar cuando está lleno.
