@@ -1,6 +1,0 @@
-size_kb,status_code,latencia_s,coste_usd,truncado,marcador_inicio_enviado,marcador_final_enviado,marcador_inicio_en_respuesta,marcador_final_en_respuesta
-0,200,39.23,0.00362,False,,,,
-5,200,51.62,0.00718,False,True,True,True,True
-20,200,44.22,0.010396,False,True,True,True,True
-50,200,46.83,0.016996,False,True,True,True,True
-100,200,46.44,0.02205,True,True,False,True,False
